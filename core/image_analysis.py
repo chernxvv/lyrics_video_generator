@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -8,8 +9,11 @@ from sklearn.cluster import KMeans
 
 from models import PaletteColor, PaletteInfo
 
+logger = logging.getLogger(__name__)
+
 
 def extract_dominant_palette(image_path: Path, k: int = 5) -> PaletteInfo:
+    logger.info("Анализ обложки и извлечение палитры: %s", image_path)
     image = Image.open(image_path).convert("RGB")
     image.thumbnail((320, 320))
     data = np.array(image).reshape(-1, 3)
@@ -27,4 +31,5 @@ def extract_dominant_palette(image_path: Path, k: int = 5) -> PaletteInfo:
         colors.append(PaletteColor(rgb=rgb, ratio=ratio))
 
     colors.sort(key=lambda c: c.ratio, reverse=True)
+    logger.info("Палитра извлечена: %s", [(c.rgb, round(c.ratio, 3)) for c in colors])
     return PaletteInfo(colors=colors)

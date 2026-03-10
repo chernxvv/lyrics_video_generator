@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
@@ -26,6 +27,8 @@ from core.render import render_video
 from core.validation import validate_project
 from models import LyricLine, ProjectData, RenderSettings
 
+logger = logging.getLogger(__name__)
+
 
 class RenderWorker(QThread):
     progress = Signal(int)
@@ -38,6 +41,7 @@ class RenderWorker(QThread):
         self.output_path = output_path
 
     def run(self):
+        logger.info("Worker: запуск генерации")
         try:
             duration = validate_project(self.project)
             palette = extract_dominant_palette(Path(self.project.image_path))
@@ -49,8 +53,10 @@ class RenderWorker(QThread):
                 RenderSettings(),
                 progress_callback=lambda value: self.progress.emit(value),
             )
+            logger.info("Worker: генерация завершена")
             self.finished_ok.emit(str(self.output_path))
         except Exception as exc:  # noqa: BLE001
+            logger.exception("Worker: ошибка генерации")
             self.failed.emit(str(exc))
 
 
@@ -62,6 +68,7 @@ class MainWindow(QMainWindow):
         self.project = ProjectData()
         self._worker: RenderWorker | None = None
         self._build_ui()
+        logger.info("Окно приложения инициализировано")
 
     def _build_ui(self):
         root = QWidget()
@@ -124,23 +131,27 @@ class MainWindow(QMainWindow):
         self.table.insertRow(row)
         self.table.setItem(row, 0, QTableWidgetItem("00:00"))
         self.table.setItem(row, 1, QTableWidgetItem(""))
+        logger.info("Добавлена строка текста: row=%d", row)
 
     def delete_row(self):
         row = self.table.currentRow()
         if row >= 0:
             self.table.removeRow(row)
+            logger.info("Удалена строка текста: row=%d", row)
 
     def pick_audio(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выберите аудио", "", "Audio (*.mp3 *.wav *.flac *.m4a)")
         if path:
             self.project.audio_path = Path(path)
             self.audio_label.setText(Path(path).name)
+            logger.info("Выбран аудиофайл: %s", path)
 
     def pick_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выберите обложку", "", "Images (*.png *.jpg *.jpeg *.webp)")
         if path:
             self.project.image_path = Path(path)
             self.image_label.setText(Path(path).name)
+            logger.info("Выбрана обложка: %s", path)
 
     def _collect_project(self):
         lyrics: list[LyricLine] = []
@@ -155,12 +166,21 @@ class MainWindow(QMainWindow):
         self.project.release_date = self.date_input.text()
         self.project.lyrics = lyrics
 
+        logger.info(
+            "Собраны данные проекта: artist='%s', title='%s', lines=%d",
+            self.project.artist,
+            self.project.title,
+            len(lyrics),
+        )
+
     def generate(self):
         self._collect_project()
         output, _ = QFileDialog.getSaveFileName(self, "Сохранить видео", "lyrics_video.mp4", "Video (*.mp4)")
         if not output:
+            logger.info("Генерация отменена: путь сохранения не выбран")
             return
 
+        logger.info("Старт генерации в файл: %s", output)
         self.generate_button.setEnabled(False)
         self.progress.setValue(0)
         self._worker = RenderWorker(self.project, Path(output))
@@ -170,9 +190,17 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def _on_success(self, output: str):
+        logger.info("Генерация успешно завершена: %s", output)
         self.generate_button.setEnabled(True)
         QMessageBox.information(self, "Готово", f"Видео сохранено:\n{output}")
 
     def _on_fail(self, error: str):
+        logger.error("Генерация завершена с ошибкой: %s", error)
         self.generate_button.setEnabled(True)
+        if "Укажите" in error or "Выберите" in error or "Добавьте" in error or "Строка" in error:
+            QMessageBox.warning(self, "Ошибка валидации", error)
+            return
+        if "ffmpeg" in error.lower() or "ffprobe" in error.lower() or "PATH" in error:
+            QMessageBox.warning(self, "Не найдены ffmpeg/ffprobe", error)
+            return
         QMessageBox.critical(self, "Ошибка", error)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import shutil
 import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,6 +14,8 @@ from core.background import build_background_frame
 from core.layout import compute_layout
 from core.lyrics import active_line_index, sort_lyrics
 from models import PaletteInfo, ProjectData, RenderSettings
+
+logger = logging.getLogger(__name__)
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -29,6 +33,14 @@ def _draw_centered(draw: ImageDraw.ImageDraw, text: str, y: int, width: int, fon
     draw.text((x, y), text, font=font, fill=fill)
 
 
+def _ensure_ffmpeg_available() -> None:
+    logger.info("Проверка доступности ffmpeg")
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError(
+            "Не найден ffmpeg в PATH. Установите FFmpeg и добавьте ffmpeg в PATH перед генерацией видео."
+        )
+
+
 def render_video(
     project: ProjectData,
     palette: PaletteInfo,
@@ -37,6 +49,9 @@ def render_video(
     settings: RenderSettings,
     progress_callback=None,
 ) -> None:
+    logger.info("Старт рендера видео в файл: %s", output_path)
+    _ensure_ffmpeg_available()
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -44,6 +59,15 @@ def render_video(
     total_frames = int(duration * fps)
     lines = sort_lyrics(project.lyrics)
     layout = compute_layout(width, height)
+
+    logger.info(
+        "Параметры рендера: %dx%d, fps=%d, длительность=%.2fs, кадров=%d",
+        width,
+        height,
+        fps,
+        duration,
+        total_frames,
+    )
 
     cover = Image.open(project.image_path).convert("RGB")
     cover = cover.resize((layout.cover_box[2] - layout.cover_box[0], layout.cover_box[3] - layout.cover_box[1]))
@@ -55,6 +79,7 @@ def render_video(
 
     with TemporaryDirectory() as tmp:
         raw_path = Path(tmp) / "video.rgb"
+        logger.info("Генерация сырых кадров: %s", raw_path)
         with raw_path.open("wb") as raw_file:
             for i in range(total_frames):
                 t = i / fps
@@ -117,9 +142,12 @@ def render_video(
             "-shortest",
             str(output_path),
         ]
+        logger.info("Запуск ffmpeg: %s", " ".join(cmd))
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
+            logger.error("ffmpeg ошибка: %s", result.stderr[-2000:])
             raise RuntimeError(f"Ошибка ffmpeg: {result.stderr[-1200:]}")
 
     if progress_callback:
         progress_callback(100)
+    logger.info("Рендер завершен успешно: %s", output_path)
