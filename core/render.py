@@ -4,7 +4,6 @@ import logging
 import shutil
 import subprocess
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from textwrap import wrap
 
 import numpy as np
@@ -12,7 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from core.background import build_background_frame
 from core.layout import compute_layout
-from core.lyrics import active_line_index, sort_lyrics
+from core.lyrics import active_line_index_precomputed, prepare_timeline
 from models import PaletteInfo, ProjectData, RenderSettings
 
 logger = logging.getLogger(__name__)
@@ -41,6 +40,46 @@ def _ensure_ffmpeg_available() -> None:
         )
 
 
+def _supports_encoder(encoder_name: str) -> bool:
+    try:
+        result = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, check=False)
+    except OSError:
+        return False
+    if result.returncode != 0:
+        logger.warning("Не удалось проверить список энкодеров ffmpeg: %s", result.stderr[-500:])
+        return False
+    return encoder_name in result.stdout
+
+
+def _resolve_video_codec(settings: RenderSettings) -> tuple[str, str]:
+    if not settings.prefer_hw_encode:
+        return settings.video_codec_sw, "hardware encoding отключен в настройках"
+    if _supports_encoder(settings.video_codec_hw):
+        return settings.video_codec_hw, "обнаружена поддержка NVENC"
+    return settings.video_codec_sw, "NVENC недоступен в ffmpeg -encoders"
+
+
+def _build_lyrics_overlay(
+    lines,
+    current_index: int,
+    width: int,
+    height: int,
+    font_lyrics,
+) -> Image.Image:
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 105))
+    draw = ImageDraw.Draw(overlay)
+    visible = range(max(0, current_index - 2), min(len(lines), current_index + 3))
+    y = 22
+    for idx in visible:
+        prefix = "▶ " if idx == current_index else ""
+        color = (255, 255, 255, 255) if idx == current_index else (220, 220, 220, 255)
+        text = prefix + lines[idx].text
+        for part in wrap(text, width=34):
+            draw.text((24, y), part, font=font_lyrics, fill=color)
+            y += 52
+    return overlay
+
+
 def render_video(
     project: ProjectData,
     palette: PaletteInfo,
@@ -48,7 +87,7 @@ def render_video(
     output_path: Path,
     settings: RenderSettings,
     progress_callback=None,
-) -> None:
+) -> str:
     logger.info("Старт рендера видео в файл: %s", output_path)
     _ensure_ffmpeg_available()
 
@@ -57,8 +96,11 @@ def render_video(
 
     width, height, fps = settings.width, settings.height, settings.fps
     total_frames = int(duration * fps)
-    lines = sort_lyrics(project.lyrics)
+    lines, start_times = prepare_timeline(project.lyrics)
     layout = compute_layout(width, height)
+
+    codec, codec_reason = _resolve_video_codec(settings)
+    logger.info("Выбран видеокодек: %s (%s)", codec, codec_reason)
 
     logger.info(
         "Параметры рендера: %dx%d, fps=%d, длительность=%.2fs, кадров=%d",
@@ -77,64 +119,41 @@ def render_video(
     font_lyrics = _load_font(46)
     font_date = _load_font(36)
 
-    with TemporaryDirectory() as tmp:
-        raw_path = Path(tmp) / "video.rgb"
-        logger.info("Генерация сырых кадров: %s", raw_path)
-        with raw_path.open("wb") as raw_file:
-            for i in range(total_frames):
-                t = i / fps
-                bg = build_background_frame(t, width, height, palette)
-                img = Image.fromarray(bg)
-                draw = ImageDraw.Draw(img)
+    lx1, ly1, lx2, ly2 = layout.lyrics_box
+    lyrics_width = lx2 - lx1
+    lyrics_height = ly2 - ly1
+    cached_idx = None
+    cached_overlay = None
 
-                _draw_centered(draw, project.artist, layout.artist_y, width, font_artist, (255, 255, 255))
-                _draw_centered(draw, "—", layout.dash_y, width, font_artist, (255, 255, 255))
-                _draw_centered(draw, project.title, layout.title_y, width, font_title, (255, 255, 255))
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{width}x{height}",
+        "-r",
+        str(fps),
+        "-i",
+        "-",
+        "-i",
+        str(project.audio_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        codec,
+    ]
+    if codec == settings.video_codec_hw:
+        cmd.extend(["-preset", "p5", "-cq", "22"])
+    else:
+        cmd.extend(["-preset", "medium", "-crf", "21"])
 
-                img.paste(cover, (layout.cover_box[0], layout.cover_box[1]))
-
-                lx1, ly1, lx2, ly2 = layout.lyrics_box
-                overlay = Image.new("RGBA", (lx2 - lx1, ly2 - ly1), (0, 0, 0, 105))
-                img.paste(overlay, (lx1, ly1), overlay)
-
-                current = active_line_index(lines, t)
-                visible = range(max(0, current - 2), min(len(lines), current + 3))
-                y = ly1 + 22
-                for idx in visible:
-                    prefix = "▶ " if idx == current else ""
-                    color = (255, 255, 255) if idx == current else (220, 220, 220)
-                    text = prefix + lines[idx].text
-                    for part in wrap(text, width=34):
-                        draw.text((lx1 + 24, y), part, font=font_lyrics, fill=color)
-                        y += 52
-                _draw_centered(draw, project.release_date, layout.date_y, width, font_date, (245, 245, 245))
-
-                raw_file.write(np.array(img, dtype=np.uint8).tobytes())
-
-                if progress_callback and (i % max(1, fps // 2) == 0):
-                    progress_callback(int(i / total_frames * 100))
-
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-s",
-            f"{width}x{height}",
-            "-r",
-            str(fps),
-            "-i",
-            str(raw_path),
-            "-i",
-            str(project.audio_path),
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            settings.video_codec,
+    cmd.extend(
+        [
             "-pix_fmt",
             settings.pixel_format,
             "-c:a",
@@ -142,12 +161,53 @@ def render_video(
             "-shortest",
             str(output_path),
         ]
-        logger.info("Запуск ffmpeg: %s", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            logger.error("ffmpeg ошибка: %s", result.stderr[-2000:])
-            raise RuntimeError(f"Ошибка ffmpeg: {result.stderr[-1200:]}")
+    )
+
+    logger.info("Старт ffmpeg pipe: %s", " ".join(cmd))
+    process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    try:
+        assert process.stdin is not None
+        logger.info("Начало записи кадров в ffmpeg stdin")
+        for i in range(total_frames):
+            t = i / fps
+            bg = build_background_frame(t, width, height, palette)
+            img = Image.fromarray(bg)
+            draw = ImageDraw.Draw(img)
+
+            _draw_centered(draw, project.artist, layout.artist_y, width, font_artist, (255, 255, 255))
+            _draw_centered(draw, "—", layout.dash_y, width, font_artist, (255, 255, 255))
+            _draw_centered(draw, project.title, layout.title_y, width, font_title, (255, 255, 255))
+            img.paste(cover, (layout.cover_box[0], layout.cover_box[1]))
+
+            current_idx = active_line_index_precomputed(start_times, t)
+            if cached_overlay is None or current_idx != cached_idx:
+                cached_idx = current_idx
+                cached_overlay = _build_lyrics_overlay(lines, current_idx, lyrics_width, lyrics_height, font_lyrics)
+            img.paste(cached_overlay, (lx1, ly1), cached_overlay)
+
+            _draw_centered(draw, project.release_date, layout.date_y, width, font_date, (245, 245, 245))
+
+            process.stdin.write(np.array(img, dtype=np.uint8).tobytes())
+
+            if progress_callback and (i % max(1, fps // 2) == 0):
+                progress_callback(int(i / total_frames * 100))
+
+        logger.info("Завершение записи кадров, закрытие stdin")
+        process.stdin.close()
+        stderr = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
+        return_code = process.wait()
+        logger.info("ffmpeg завершен с кодом: %s", return_code)
+        if return_code != 0:
+            logger.error("ffmpeg ошибка: %s", stderr[-2000:])
+            raise RuntimeError(f"Ошибка ffmpeg: {stderr[-1200:]}")
+    finally:
+        if process.stdin and not process.stdin.closed:
+            process.stdin.close()
+        if process.stderr:
+            process.stderr.close()
 
     if progress_callback:
         progress_callback(100)
     logger.info("Рендер завершен успешно: %s", output_path)
+    return codec

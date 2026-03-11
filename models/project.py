@@ -26,9 +26,19 @@ class RenderSettings:
     width: int = 1080
     height: int = 1920
     fps: int = 30
-    video_codec: str = "libx264"
+    prefer_hw_encode: bool = True
+    video_codec_hw: str = "h264_nvenc"
+    video_codec_sw: str = "libx264"
     audio_codec: str = "aac"
     pixel_format: str = "yuv420p"
+
+    @classmethod
+    def preview(cls) -> "RenderSettings":
+        return cls(width=540, height=960, fps=24)
+
+    @classmethod
+    def final(cls) -> "RenderSettings":
+        return cls(width=1080, height=1920, fps=30)
 
 
 @dataclass(slots=True)

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QComboBox,
     QProgressBar,
     QTableWidget,
     QTableWidgetItem,
@@ -35,26 +36,28 @@ class RenderWorker(QThread):
     finished_ok = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, project: ProjectData, output_path: Path):
+    def __init__(self, project: ProjectData, output_path: Path, settings: RenderSettings, mode: str):
         super().__init__()
         self.project = project
         self.output_path = output_path
+        self.settings = settings
+        self.mode = mode
 
     def run(self):
-        logger.info("Worker: запуск генерации")
+        logger.info("Worker: запуск генерации, режим=%s", self.mode)
         try:
             duration = validate_project(self.project)
             palette = extract_dominant_palette(Path(self.project.image_path))
-            render_video(
+            codec = render_video(
                 self.project,
                 palette,
                 duration,
                 self.output_path,
-                RenderSettings(),
+                self.settings,
                 progress_callback=lambda value: self.progress.emit(value),
             )
-            logger.info("Worker: генерация завершена")
-            self.finished_ok.emit(str(self.output_path))
+            logger.info("Worker: генерация завершена, режим=%s, codec=%s", self.mode, codec)
+            self.finished_ok.emit(f"{self.output_path}|{self.mode}|{codec}")
         except Exception as exc:  # noqa: BLE001
             logger.exception("Worker: ошибка генерации")
             self.failed.emit(str(exc))
@@ -112,10 +115,18 @@ class MainWindow(QMainWindow):
 
         actions = QGroupBox("Генерация")
         actions_layout = QVBoxLayout(actions)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Preview", "Final"])
+        self.mode_combo.setCurrentText("Final")
+        self.status_label = QLabel("Режим: Final")
+        self.mode_combo.currentTextChanged.connect(lambda mode: self.status_label.setText(f"Режим: {mode}"))
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.generate_button = QPushButton("Сгенерировать видео")
         self.generate_button.clicked.connect(self.generate)
+        actions_layout.addWidget(QLabel("Режим рендера"))
+        actions_layout.addWidget(self.mode_combo)
+        actions_layout.addWidget(self.status_label)
         actions_layout.addWidget(self.generate_button)
         actions_layout.addWidget(self.progress)
 
@@ -173,6 +184,12 @@ class MainWindow(QMainWindow):
             len(lyrics),
         )
 
+    def _selected_render_settings(self) -> tuple[str, RenderSettings]:
+        mode = self.mode_combo.currentText()
+        if mode == "Preview":
+            return mode, RenderSettings.preview()
+        return mode, RenderSettings.final()
+
     def generate(self):
         self._collect_project()
         output, _ = QFileDialog.getSaveFileName(self, "Сохранить видео", "lyrics_video.mp4", "Video (*.mp4)")
@@ -180,22 +197,34 @@ class MainWindow(QMainWindow):
             logger.info("Генерация отменена: путь сохранения не выбран")
             return
 
-        logger.info("Старт генерации в файл: %s", output)
+        mode, settings = self._selected_render_settings()
+        logger.info(
+            "Старт генерации в файл: %s, режим=%s, %dx%d@%dfps",
+            output,
+            mode,
+            settings.width,
+            settings.height,
+            settings.fps,
+        )
+        self.status_label.setText(f"Рендер: {mode}, подготовка...")
         self.generate_button.setEnabled(False)
         self.progress.setValue(0)
-        self._worker = RenderWorker(self.project, Path(output))
+        self._worker = RenderWorker(self.project, Path(output), settings, mode)
         self._worker.progress.connect(self.progress.setValue)
         self._worker.finished_ok.connect(self._on_success)
         self._worker.failed.connect(self._on_fail)
         self._worker.start()
 
-    def _on_success(self, output: str):
-        logger.info("Генерация успешно завершена: %s", output)
+    def _on_success(self, payload: str):
+        output, mode, codec = payload.split("|", 2)
+        logger.info("Генерация успешно завершена: %s, режим=%s, codec=%s", output, mode, codec)
+        self.status_label.setText(f"Готово: {mode}, codec={codec}")
         self.generate_button.setEnabled(True)
-        QMessageBox.information(self, "Готово", f"Видео сохранено:\n{output}")
+        QMessageBox.information(self, "Готово", f"Видео сохранено:\n{output}\n\nРежим: {mode}\nКодек: {codec}")
 
     def _on_fail(self, error: str):
         logger.error("Генерация завершена с ошибкой: %s", error)
+        self.status_label.setText("Ошибка рендера")
         self.generate_button.setEnabled(True)
         if "Укажите" in error or "Выберите" in error or "Добавьте" in error or "Строка" in error:
             QMessageBox.warning(self, "Ошибка валидации", error)
