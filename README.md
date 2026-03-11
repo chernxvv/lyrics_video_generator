@@ -84,6 +84,7 @@ ffmpeg -hide_banner -encoders | rg h264_nvenc
 При доступности NVENC и фильтров `scale_cuda`/`hwupload_cuda` выполняется короткий runtime-probe CUDA.
 Только если probe успешен, включается CUDA-препроцессинг для обложки внутри filtergraph.
 Если probe/инициализация CUDA неуспешны, автоматически используется CPU filtergraph fallback без долгого зависания на старте.
+Если probe дал неоднозначный результат (например, `wrapped_avframe`/`Nothing was written`), рендер пробует CUDA-путь в боевом прогоне и только при реальной ошибке переключается на CPU.
 
 ## Что влияет на скорость рендера
 

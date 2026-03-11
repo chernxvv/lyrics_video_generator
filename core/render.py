@@ -200,6 +200,11 @@ def _is_cuda_runtime_failure(stderr_text: str) -> bool:
     return any(m in low for m in markers)
 
 
+def _is_inconclusive_cuda_probe(stderr_text: str) -> bool:
+    low = stderr_text.lower()
+    return "wrapped_avframe" in low or "nothing was written into output file" in low
+
+
 def _render_stream_to_ffmpeg(
     cmd: list[str],
     total_frames: int,
@@ -385,6 +390,9 @@ def render_video(
         if cuda_ok:
             use_cuda_filters = True
             cuda_reason = "runtime probe ok"
+        elif _is_inconclusive_cuda_probe(cuda_probe_reason):
+            use_cuda_filters = True
+            cuda_reason = f"runtime probe inconclusive, forcing CUDA attempt: {cuda_probe_reason}"
         else:
             cuda_reason = f"runtime probe failed: {cuda_probe_reason}"
 
