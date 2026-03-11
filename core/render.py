@@ -383,18 +383,8 @@ def render_video(
 
     codec, codec_reason = _resolve_video_codec(settings)
     has_cuda_filters = _supports_filter("scale_cuda") and _supports_filter("hwupload_cuda")
-    use_cuda_filters = False
-    cuda_reason = "disabled"
-    if codec == settings.video_codec_hw and has_cuda_filters:
-        cuda_ok, cuda_probe_reason = _probe_cuda_runtime(Path(project.image_path))
-        if cuda_ok:
-            use_cuda_filters = True
-            cuda_reason = "runtime probe ok"
-        elif _is_inconclusive_cuda_probe(cuda_probe_reason):
-            use_cuda_filters = True
-            cuda_reason = f"runtime probe inconclusive, forcing CUDA attempt: {cuda_probe_reason}"
-        else:
-            cuda_reason = f"runtime probe failed: {cuda_probe_reason}"
+    use_cuda_filters = codec == settings.video_codec_hw and has_cuda_filters
+    cuda_reason = "enabled by available ffmpeg filters" if use_cuda_filters else "disabled"
 
     logger.info("Выбран видеокодек: %s (%s)", codec, codec_reason)
     logger.info("CUDA filtergraph: %s (%s)", "enabled" if use_cuda_filters else "disabled", cuda_reason)

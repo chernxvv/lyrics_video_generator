@@ -81,10 +81,8 @@ ffmpeg -hide_banner -encoders | rg h264_nvenc
 - масштабирование и наложение обложки;
 - статичный текст (artist/title/date) через `drawtext`.
 
-При доступности NVENC и фильтров `scale_cuda`/`hwupload_cuda` выполняется короткий runtime-probe CUDA.
-Только если probe успешен, включается CUDA-препроцессинг для обложки внутри filtergraph.
-Если probe/инициализация CUDA неуспешны, автоматически используется CPU filtergraph fallback без долгого зависания на старте.
-Если probe дал неоднозначный результат (например, `wrapped_avframe`/`Nothing was written`), рендер пробует CUDA-путь в боевом прогоне и только при реальной ошибке переключается на CPU.
+Если доступен NVENC и фильтры `scale_cuda`/`hwupload_cuda`, рендер сразу запускает CUDA-preprocess в боевом filtergraph.
+Если реальный запуск ffmpeg возвращает ошибку CUDA (в т.ч. `-22 Invalid argument`), выполняется fallback на CPU filtergraph с логом первичной причины.
 
 ## Что влияет на скорость рендера
 
