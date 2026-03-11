@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from bisect import bisect_right
+
 from models import LyricLine
 
 
@@ -31,3 +33,15 @@ def active_line_index(lines: list[LyricLine], current_time: float) -> int:
         else:
             break
     return idx
+
+
+def prepare_timeline(lines: list[LyricLine]) -> tuple[list[LyricLine], list[float]]:
+    sorted_lines = sort_lyrics(lines)
+    start_times = [parse_mmss(line.start_time) for line in sorted_lines]
+    return sorted_lines, start_times
+
+
+def active_line_index_precomputed(start_times: list[float], current_time: float) -> int:
+    if not start_times:
+        return -1
+    return bisect_right(start_times, current_time) - 1
