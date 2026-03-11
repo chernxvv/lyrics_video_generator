@@ -57,6 +57,38 @@ def _supports_filter(filter_name: str) -> bool:
     return filter_name in output
 
 
+def _probe_cuda_runtime() -> tuple[bool, str]:
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-init_hw_device",
+        "cuda=gpu:0",
+        "-filter_hw_device",
+        "gpu",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=16x16:d=0.1",
+        "-vf",
+        "hwupload_cuda,scale_cuda=16:16,hwdownload,format=rgb24",
+        "-frames:v",
+        "1",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=8)
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+    if res.returncode == 0:
+        return True, "ok"
+    err = (res.stderr or "").strip()
+    return False, (err[-300:] if err else f"returncode={res.returncode}")
+
+
 def _resolve_video_codec(settings: RenderSettings) -> tuple[str, str]:
     if not settings.prefer_hw_encode:
         return settings.video_codec_sw, "hardware encoding отключен в настройках"
@@ -348,9 +380,19 @@ def render_video(
     chunk_size = max(1, settings.frame_chunk_size)
 
     codec, codec_reason = _resolve_video_codec(settings)
-    use_cuda_filters = codec == settings.video_codec_hw and _supports_filter("scale_cuda") and _supports_filter("hwupload_cuda")
+    has_cuda_filters = _supports_filter("scale_cuda") and _supports_filter("hwupload_cuda")
+    use_cuda_filters = False
+    cuda_reason = "disabled"
+    if codec == settings.video_codec_hw and has_cuda_filters:
+        cuda_ok, cuda_probe_reason = _probe_cuda_runtime()
+        if cuda_ok:
+            use_cuda_filters = True
+            cuda_reason = "runtime probe ok"
+        else:
+            cuda_reason = f"runtime probe failed: {cuda_probe_reason}"
+
     logger.info("Выбран видеокодек: %s (%s)", codec, codec_reason)
-    logger.info("CUDA filtergraph: %s", "enabled" if use_cuda_filters else "disabled")
+    logger.info("CUDA filtergraph: %s (%s)", "enabled" if use_cuda_filters else "disabled", cuda_reason)
     logger.info(
         "Параметры рендера: %dx%d, fps=%d, длительность=%.2fs, кадров=%d, threads=%d, chunk=%d",
         width,
