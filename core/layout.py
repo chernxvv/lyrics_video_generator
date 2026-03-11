@@ -14,15 +14,15 @@ class Layout:
 
 
 def compute_layout(width: int, height: int) -> Layout:
-    cover_w = int(width * 0.62)
-    cover_h = cover_w
-    cover_x = (width - cover_w) // 2
-    cover_y = int(height * 0.3)
-
     lyrics_h = int(height * 0.18)
     lyrics_w = int(width * 0.8)
     lyrics_x = (width - lyrics_w) // 2
     lyrics_y = int(height * 0.67)
+
+    cover_w = lyrics_w
+    cover_h = cover_w
+    cover_x = lyrics_x
+    cover_y = max(0, lyrics_y - cover_h)
 
     return Layout(
         artist_y=int(height * 0.07),
