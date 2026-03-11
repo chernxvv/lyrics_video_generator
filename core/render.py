@@ -57,16 +57,16 @@ def _supports_filter(filter_name: str) -> bool:
     return filter_name in output
 
 
-def _probe_cuda_runtime() -> tuple[bool, str]:
+def _probe_cuda_runtime(image_path: Path) -> tuple[bool, str]:
     cmd = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "error",
-        "-f",
-        "lavfi",
+        "-loop",
+        "1",
         "-i",
-        "color=c=black:s=16x16:d=0.1",
+        str(image_path),
         "-vf",
         "format=nv12,hwupload_cuda,scale_cuda=16:16,hwdownload,format=rgb24",
         "-frames:v",
@@ -381,7 +381,7 @@ def render_video(
     use_cuda_filters = False
     cuda_reason = "disabled"
     if codec == settings.video_codec_hw and has_cuda_filters:
-        cuda_ok, cuda_probe_reason = _probe_cuda_runtime()
+        cuda_ok, cuda_probe_reason = _probe_cuda_runtime(Path(project.image_path))
         if cuda_ok:
             use_cuda_filters = True
             cuda_reason = "runtime probe ok"
