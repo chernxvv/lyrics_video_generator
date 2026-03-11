@@ -22,7 +22,7 @@ def compute_layout(width: int, height: int) -> Layout:
     cover_w = lyrics_w
     cover_h = cover_w
     cover_x = lyrics_x
-    cover_y = int(height * 0.31)
+    cover_y = max(0, lyrics_y - cover_h)
 
     return Layout(
         artist_y=int(height * 0.07),
