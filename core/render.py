@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -137,6 +138,21 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
     )
 
 
+def _drain_stderr(stderr_pipe, sink: list[str], stop_event: threading.Event) -> None:
+    if stderr_pipe is None:
+        return
+    while not stop_event.is_set():
+        line = stderr_pipe.readline()
+        if not line:
+            break
+        text = line.decode("utf-8", errors="replace").rstrip()
+        if text:
+            sink.append(text)
+            if len(sink) > 3000:
+                del sink[:1500]
+            logger.debug("ffmpeg: %s", text)
+
+
 def render_video(
     project: ProjectData,
     palette: PaletteInfo,
@@ -153,6 +169,9 @@ def render_video(
 
     width, height, fps = settings.width, settings.height, settings.fps
     total_frames = int(duration * fps)
+    if total_frames <= 0:
+        raise RuntimeError("Ошибка рендера: длительность слишком мала, кадров=0")
+
     lines, start_times = prepare_timeline(project.lyrics)
     layout = compute_layout(width, height)
 
@@ -184,6 +203,10 @@ def render_video(
 
     cmd = [
         "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostats",
         "-y",
         "-f",
         "rawvideo",
@@ -223,20 +246,30 @@ def render_video(
 
     logger.info("Старт ffmpeg pipe: %s", " ".join(cmd))
     process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    stderr_lines: list[str] = []
+    stop_stderr = threading.Event()
+    stderr_thread = threading.Thread(target=_drain_stderr, args=(process.stderr, stderr_lines, stop_stderr), daemon=True)
+    stderr_thread.start()
 
     render_started = time.perf_counter()
     chunks = [(i, min(total_frames, i + chunk_size)) for i in range(0, total_frames, chunk_size)]
+    total_chunks = len(chunks)
 
     try:
         assert process.stdin is not None
-        logger.info("Начало многопоточной генерации кадров")
+        logger.info("Начало многопоточной генерации кадров: чанков=%d", total_chunks)
+        if progress_callback:
+            progress_callback(0)
+
         with ThreadPoolExecutor(max_workers=thread_count) as executor:
             pending: dict[Future, int] = {}
             ready_chunks: dict[int, list[bytes]] = {}
             next_submit = 0
             next_write = 0
             written_frames = 0
+            written_chunks = 0
             max_pending = max(1, thread_count * 2)
+            last_heartbeat = time.perf_counter()
 
             while next_submit < len(chunks) and len(pending) < max_pending:
                 start_idx, end_idx = chunks[next_submit]
@@ -253,22 +286,42 @@ def render_video(
                     (lx1, ly1),
                 )
                 pending[fut] = start_idx
+                logger.debug("Submit chunk %d/%d: frames %d..%d", next_submit + 1, total_chunks, start_idx, end_idx - 1)
                 next_submit += 1
 
             while pending:
-                done, _ = wait(pending.keys(), return_when=FIRST_COMPLETED)
+                done, _ = wait(pending.keys(), return_when=FIRST_COMPLETED, timeout=1.0)
+                if not done:
+                    now = time.perf_counter()
+                    if now - last_heartbeat >= 2.0:
+                        logger.info(
+                            "Render progress heartbeat: written_frames=%d/%d, written_chunks=%d/%d, pending=%d, ready=%d",
+                            written_frames,
+                            total_frames,
+                            written_chunks,
+                            total_chunks,
+                            len(pending),
+                            len(ready_chunks),
+                        )
+                        last_heartbeat = now
+                    continue
+
                 for fut in done:
                     pending.pop(fut)
                     chunk_start, chunk_frames = fut.result()
                     ready_chunks[chunk_start] = chunk_frames
+                    logger.debug("Chunk ready: start=%d, size=%d", chunk_start, len(chunk_frames))
 
                 while next_write in ready_chunks:
                     chunk_frames = ready_chunks.pop(next_write)
                     for frame_bytes in chunk_frames:
                         process.stdin.write(frame_bytes)
                     written_frames += len(chunk_frames)
+                    written_chunks += 1
+                    progress = int(written_frames / total_frames * 100)
+                    logger.info("Chunk written: %d/%d, frames=%d/%d, progress=%d%%", written_chunks, total_chunks, written_frames, total_frames, progress)
                     if progress_callback:
-                        progress_callback(int(written_frames / total_frames * 100))
+                        progress_callback(progress)
                     next_write += chunk_size
 
                 while next_submit < len(chunks) and len(pending) < max_pending:
@@ -286,22 +339,27 @@ def render_video(
                         (lx1, ly1),
                     )
                     pending[fut] = start_idx
+                    logger.debug("Submit chunk %d/%d: frames %d..%d", next_submit + 1, total_chunks, start_idx, end_idx - 1)
                     next_submit += 1
 
         logger.info("Завершение записи кадров, закрытие stdin")
         process.stdin.close()
-        stderr_text = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
         return_code = process.wait()
+        stop_stderr.set()
+        stderr_thread.join(timeout=2.0)
+
         elapsed = time.perf_counter() - render_started
         fps_actual = (total_frames / elapsed) if elapsed > 0 else 0.0
         logger.info("ffmpeg завершен с кодом: %s, фактическая скорость=%.2f fps", return_code, fps_actual)
         if return_code != 0:
+            stderr_text = "\n".join(stderr_lines)
             logger.error("ffmpeg ошибка: %s", stderr_text[-2000:])
             raise RuntimeError(f"Ошибка ffmpeg: {stderr_text[-1200:]}")
     finally:
+        stop_stderr.set()
         if process.stdin and not process.stdin.closed:
             process.stdin.close()
-        if process.stderr:
+        if process.stderr and not process.stderr.closed:
             process.stderr.close()
 
     if progress_callback:
