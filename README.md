@@ -83,6 +83,7 @@ ffmpeg -hide_banner -encoders | rg h264_nvenc
 
 Если доступен NVENC и фильтры `scale_cuda`/`hwupload_cuda`, рендер сразу запускает CUDA-preprocess в боевом filtergraph.
 Если реальный запуск ffmpeg возвращает ошибку CUDA (в т.ч. `-22 Invalid argument`), выполняется fallback на CPU filtergraph с логом первичной причины.
+Для совместимости с ffmpeg-сборками (включая gyan) CUDA-цепочка использует `nv12` на этапе `hwdownload`, что устраняет типичную ошибку `Invalid output format rgba for hwframe download`.
 
 ## Что влияет на скорость рендера
 

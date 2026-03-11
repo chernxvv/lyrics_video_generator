@@ -68,7 +68,7 @@ def _probe_cuda_runtime(image_path: Path) -> tuple[bool, str]:
         "-i",
         str(image_path),
         "-vf",
-        "format=nv12,hwupload_cuda,scale_cuda=16:16,hwdownload,format=rgb24",
+        "format=nv12,hwupload_cuda,scale_cuda=16:16:format=nv12,hwdownload,format=nv12",
         "-frames:v",
         "1",
         "-f",
@@ -152,15 +152,16 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
     if use_cuda:
         cover_chain = (
             f"[1:v]format=nv12,hwupload_cuda,"
-            f"scale_cuda={cover_w}:{cover_h},"
-            f"hwdownload,format=rgba[cover]"
+            f"scale_cuda={cover_w}:{cover_h}:format=nv12,"
+            f"hwdownload,format=nv12[cover]"
         )
     else:
         cover_chain = f"[1:v]scale={cover_w}:{cover_h}[cover]"
 
     return (
         f"{cover_chain};"
-        f"[0:v][cover]overlay={cover_x}:{cover_y}[v1];"
+        f"[0:v]format=nv12[base];"
+        f"[base][cover]overlay={cover_x}:{cover_y}[v1];"
         f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:fontsize=58:fontcolor=white,"
         f"drawtext=text='—':x=(w-text_w)/2:y={layout.dash_y}:fontsize=58:fontcolor=white,"
         f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:fontsize=52:fontcolor=white,"
