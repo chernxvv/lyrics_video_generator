@@ -19,7 +19,8 @@ from models import PaletteInfo, ProjectData, RenderSettings
 logger = logging.getLogger(__name__)
 
 NOTO_SERIF_FONT_CANDIDATES = (
-    Path("C:/Windows/Fonts/NotoSerif-Regular.ttf"),
+    Path("C:/Windows/Fonts/Noto Serif/NotoSerif-Bold.ttf"),
+    Path("C:/Windows/Fonts/NotoSerif-Bold.ttf"),
     Path("/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf"),
     Path("/usr/share/fonts/truetype/noto/NotoSerif/NotoSerif-Regular.ttf"),
     Path("/usr/share/fonts/opentype/noto/NotoSerif-Regular.ttf"),
@@ -27,6 +28,7 @@ NOTO_SERIF_FONT_CANDIDATES = (
 )
 
 NOTO_SERIF_BOLD_FONT_CANDIDATES = (
+    Path("C:/Windows/Fonts/Noto Serif/NotoSerif-Bold.ttf"),
     Path("C:/Windows/Fonts/NotoSerif-Bold.ttf"),
     Path("/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf"),
     Path("/usr/share/fonts/truetype/noto/NotoSerif/NotoSerif-Bold.ttf"),
