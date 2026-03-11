@@ -103,6 +103,25 @@ def _escape_drawtext(value: str) -> str:
     )
 
 
+
+
+def _resolve_ffmpeg_fontfile() -> str | None:
+    candidates = [
+        Path("C:/Windows/Fonts/arial.ttf"),
+        Path("C:/Windows/Fonts/ARIAL.TTF"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    ]
+    for path in candidates:
+        if path.exists():
+            return str(path).replace("\\", "/")
+    return None
+
+
+def _drawtext_style(fontsize: int) -> str:
+    fontfile = _resolve_ffmpeg_fontfile()
+    if fontfile:
+        return f"fontfile='{_escape_drawtext(fontfile)}':fontsize={fontsize}:fontcolor=white"
+    return f"fontsize={fontsize}:fontcolor=white"
 def _build_lyrics_overlay(lines, current_index: int, width: int, height: int, font_lyrics) -> Image.Image:
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 105))
     draw = ImageDraw.Draw(overlay)
@@ -162,10 +181,10 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
         f"{cover_chain};"
         f"[0:v]format=nv12[base];"
         f"[base][cover]overlay={cover_x}:{cover_y}[v1];"
-        f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:fontsize=58:fontcolor=white,"
-        f"drawtext=text='—':x=(w-text_w)/2:y={layout.dash_y}:fontsize=58:fontcolor=white,"
-        f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:fontsize=52:fontcolor=white,"
-        f"drawtext=text='{release_date}':x=(w-text_w)/2:y={layout.date_y}:fontsize=36:fontcolor=white[vout]"
+        f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:{_drawtext_style(58)},"
+        f"drawtext=text='—':x=(w-text_w)/2:y={layout.dash_y}:{_drawtext_style(58)},"
+        f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:{_drawtext_style(52)},"
+        f"drawtext=text='{release_date}':x=(w-text_w)/2:y={layout.date_y}:{_drawtext_style(36)}[vout]"
     )
 
 
@@ -244,7 +263,7 @@ def _render_stream_to_ffmpeg(
             next_write = 0
             written_frames = 0
             written_chunks = 0
-            max_pending = max(1, thread_count * 2)
+            max_pending = max(1, thread_count)
             last_heartbeat = time.perf_counter()
 
             while next_submit < len(chunks) and len(pending) < max_pending:
