@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QHeaderView,
     QVBoxLayout,
     QWidget,
 )
@@ -141,6 +142,8 @@ class MainWindow(QMainWindow):
         lyrics_layout = QVBoxLayout(lyrics)
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Время (мм:сс)", "Строка"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         add_row = QPushButton("Добавить строку")
         del_row = QPushButton("Удалить строку")
         add_row.clicked.connect(self.add_row)
@@ -191,8 +194,12 @@ class MainWindow(QMainWindow):
     def add_row(self):
         row = self.table.rowCount()
         self.table.insertRow(row)
-        self.table.setItem(row, 0, QTableWidgetItem("00:00"))
-        self.table.setItem(row, 1, QTableWidgetItem(""))
+        time_item = QTableWidgetItem("00:00")
+        text_item = QTableWidgetItem("")
+        time_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        text_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.table.setItem(row, 0, time_item)
+        self.table.setItem(row, 1, text_item)
         logger.info("Добавлена строка текста: row=%d", row)
 
     def delete_row(self):
@@ -221,7 +228,10 @@ class MainWindow(QMainWindow):
             t_item = self.table.item(row, 0)
             l_item = self.table.item(row, 1)
             if t_item and l_item:
-                lyrics.append(LyricLine(start_time=t_item.text(), text=l_item.text()))
+                normalized_text = " ".join(l_item.text().splitlines())
+                l_item.setText(normalized_text)
+                l_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                lyrics.append(LyricLine(start_time=t_item.text(), text=normalized_text))
 
         self.project.artist = self.artist_input.text()
         self.project.title = self.title_input.text()

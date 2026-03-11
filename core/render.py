@@ -10,7 +10,7 @@ from pathlib import Path
 from textwrap import wrap
 from typing import Callable
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from core.background import build_background_frame
 from core.layout import compute_layout
@@ -19,13 +19,44 @@ from models import PaletteInfo, ProjectData, RenderSettings
 
 logger = logging.getLogger(__name__)
 
+ARIAL_FONT_CANDIDATES = (
+    Path("C:/Windows/Fonts/arial.ttf"),
+    Path("C:/Windows/Fonts/ARIAL.TTF"),
+    Path("/usr/share/fonts/truetype/msttcorefonts/Arial.ttf"),
+    Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+)
+
+NOTO_SERIF_FONT_CANDIDATES = (
+    Path("C:/Windows/Fonts/NotoSerif-Regular.ttf"),
+    Path("/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf"),
+    Path("/usr/share/fonts/truetype/noto/NotoSerif/NotoSerif-Regular.ttf"),
+    Path("/usr/share/fonts/opentype/noto/NotoSerif-Regular.ttf"),
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"),
+)
+
+
+def _resolve_existing_font(candidates: tuple[Path, ...]) -> str | None:
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    return None
+
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    for name in ("DejaVuSans.ttf", "Arial.ttf"):
+    for name in ("Arial.ttf", "DejaVuSans.ttf"):
         try:
             return ImageFont.truetype(name, size=size)
         except OSError:
             continue
+
+    resolved_path = _resolve_existing_font(ARIAL_FONT_CANDIDATES)
+    if resolved_path:
+        try:
+            return ImageFont.truetype(resolved_path, size=size)
+        except OSError:
+            pass
+
     return ImageFont.load_default()
 
 
@@ -105,33 +136,33 @@ def _escape_drawtext(value: str) -> str:
 
 
 
-def _resolve_ffmpeg_fontfile() -> str | None:
-    candidates = [
-        Path("C:/Windows/Fonts/arial.ttf"),
-        Path("C:/Windows/Fonts/ARIAL.TTF"),
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-    ]
+def _resolve_ffmpeg_fontfile(candidates: tuple[Path, ...]) -> str | None:
     for path in candidates:
         if path.exists():
             return str(path).replace("\\", "/")
     return None
 
 
-def _drawtext_style(fontsize: int) -> str:
-    fontfile = _resolve_ffmpeg_fontfile()
+def _drawtext_style(fontsize: int, font_candidates: tuple[Path, ...], *, bordered: bool = False) -> str:
+    fontfile = _resolve_ffmpeg_fontfile(font_candidates)
+    border = ":borderw=1:bordercolor=black" if bordered else ""
     if fontfile:
-        return f"fontfile='{_escape_drawtext(fontfile)}':fontsize={fontsize}:fontcolor=white"
-    return f"fontsize={fontsize}:fontcolor=white"
+        return f"fontfile='{_escape_drawtext(fontfile)}':fontsize={fontsize}:fontcolor=white{border}"
+    return f"fontsize={fontsize}:fontcolor=white{border}"
+
+
 def _build_lyrics_overlay(lines, current_index: int, width: int, height: int, font_lyrics) -> Image.Image:
-    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 105))
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     visible = range(max(0, current_index - 2), min(len(lines), current_index + 3))
-    y = 22
+    y = 10
     for idx in visible:
-        prefix = "▶ " if idx == current_index else ""
         color = (255, 255, 255, 255) if idx == current_index else (220, 220, 220, 255)
-        for part in wrap(prefix + lines[idx].text, width=34):
-            draw.text((24, y), part, font=font_lyrics, fill=color)
+        for part in wrap(lines[idx].text, width=32):
+            text_bbox = draw.textbbox((0, 0), part, font=font_lyrics, stroke_width=1)
+            text_width = text_bbox[2] - text_bbox[0]
+            x = max(0, (width - text_width) // 2)
+            draw.text((x, y), part, font=font_lyrics, fill=color, stroke_width=1, stroke_fill=(0, 0, 0, 255))
             y += 52
     return overlay
 
@@ -152,6 +183,7 @@ def _render_chunk(
     for frame_index in range(chunk_start, chunk_end):
         t = frame_index / fps
         frame = Image.fromarray(build_background_frame(t, width, height, palette)).convert("RGBA")
+        frame = frame.filter(ImageFilter.GaussianBlur(radius=5))
         current_idx = active_line_index_precomputed(start_times, t)
         frame.alpha_composite(lyrics_overlays[current_idx], (lx1, ly1))
         frames.append(frame.convert("RGB").tobytes())
@@ -177,14 +209,16 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
     else:
         cover_chain = f"[1:v]scale={cover_w}:{cover_h}[cover]"
 
+    dash_y = layout.artist_y + ((layout.title_y - layout.artist_y) // 2)
+
     return (
         f"{cover_chain};"
         f"[0:v]format=nv12[base];"
         f"[base][cover]overlay={cover_x}:{cover_y}[v1];"
-        f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:{_drawtext_style(58)},"
-        f"drawtext=text='—':x=(w-text_w)/2:y={layout.dash_y}:{_drawtext_style(58)},"
-        f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:{_drawtext_style(52)},"
-        f"drawtext=text='{release_date}':x=(w-text_w)/2:y={layout.date_y}:{_drawtext_style(36)}[vout]"
+        f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:{_drawtext_style(58, NOTO_SERIF_FONT_CANDIDATES)},"
+        f"drawtext=text='—':x=(w-text_w)/2:y={dash_y}:{_drawtext_style(58, NOTO_SERIF_FONT_CANDIDATES)},"
+        f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:{_drawtext_style(52, NOTO_SERIF_FONT_CANDIDATES)},"
+        f"drawtext=text='{release_date}':x=(w-text_w)/2:y={layout.date_y}:{_drawtext_style(36, NOTO_SERIF_FONT_CANDIDATES)}[vout]"
     )
 
 
