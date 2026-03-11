@@ -274,8 +274,11 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
     release_date = _escape_drawtext(project.release_date)
 
     if use_cuda:
-        logger.info("Для обложки используется software scale без кропа для сохранения пропорций")
-    cover_chain = f"[1:v]scale={cover_w}:{cover_h}:force_original_aspect_ratio=decrease[cover]"
+        logger.info("Для обложки используется software scale/crop без внутренних полей")
+    cover_chain = (
+        f"[1:v]scale={cover_w}:{cover_h}:force_original_aspect_ratio=increase,"
+        f"crop={cover_w}:{cover_h}:(in_w-{cover_w})/2:(in_h-{cover_h})/2[cover]"
+    )
 
     artist_size = 58
     title_size = 52
@@ -287,7 +290,7 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
     return (
         f"{cover_chain};"
         f"[0:v]format=nv12[base];"
-        f"[base][cover]overlay={cover_box_x}+(({cover_w}-overlay_w)/2):{cover_box_y}+(({cover_h}-overlay_h)/2)[v1];"
+        f"[base][cover]overlay={cover_box_x}:{cover_box_y}[v1];"
         f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:{_drawtext_style(artist_size, META_FONT_FILE)},"
         f"drawtext=text='—':x=(w-text_w)/2:y={dash_y}:{_drawtext_style(dash_size, META_FONT_FILE)},"
         f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:{_drawtext_style(title_size, META_FONT_FILE)},"
