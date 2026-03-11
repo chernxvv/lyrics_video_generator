@@ -7,10 +7,9 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
-from textwrap import wrap
 from typing import Callable
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from core.background import build_background_frame
 from core.layout import compute_layout
@@ -19,14 +18,32 @@ from models import PaletteInfo, ProjectData, RenderSettings
 
 logger = logging.getLogger(__name__)
 
+FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+LYRICS_FONT_REGULAR_FILE = "NotoSerif-Regular.ttf"
+LYRICS_FONT_BOLD_FILE = "NotoSerif-Bold.ttf"
+META_FONT_FILE = "NotoSerif-Regular.ttf"
 
-def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    for name in ("DejaVuSans.ttf", "Arial.ttf"):
-        try:
-            return ImageFont.truetype(name, size=size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
+
+def _require_font_path(filename: str) -> Path:
+    font_path = FONT_DIR / filename
+    if not font_path.exists():
+        raise RuntimeError(
+            "Не найден обязательный шрифт: "
+            f"{font_path}. "
+            "Создайте папку assets/fonts и положите туда нужные .ttf файлы: "
+            f"{LYRICS_FONT_REGULAR_FILE}, {LYRICS_FONT_BOLD_FILE}."
+        )
+    return font_path
+
+
+def _load_font(size: int, filename: str) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    font_path = _require_font_path(filename)
+    try:
+        return ImageFont.truetype(str(font_path), size=size)
+    except OSError as exc:
+        raise RuntimeError(f"Не удалось загрузить шрифт {font_path}: {exc}") from exc
+
+
 
 
 def _ensure_ffmpeg_available() -> None:
@@ -105,34 +122,118 @@ def _escape_drawtext(value: str) -> str:
 
 
 
-def _resolve_ffmpeg_fontfile() -> str | None:
-    candidates = [
-        Path("C:/Windows/Fonts/arial.ttf"),
-        Path("C:/Windows/Fonts/ARIAL.TTF"),
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-    ]
-    for path in candidates:
-        if path.exists():
-            return str(path).replace("\\", "/")
-    return None
+def _drawtext_style(fontsize: int, font_filename: str, *, bordered: bool = False) -> str:
+    fontfile = str(_require_font_path(font_filename)).replace("\\", "/")
+    border = ":borderw=1:bordercolor=black" if bordered else ""
+    return f"fontfile='{_escape_drawtext(fontfile)}':fontsize={fontsize}:fontcolor=white{border}"
 
 
-def _drawtext_style(fontsize: int) -> str:
-    fontfile = _resolve_ffmpeg_fontfile()
-    if fontfile:
-        return f"fontfile='{_escape_drawtext(fontfile)}':fontsize={fontsize}:fontcolor=white"
-    return f"fontsize={fontsize}:fontcolor=white"
-def _build_lyrics_overlay(lines, current_index: int, width: int, height: int, font_lyrics) -> Image.Image:
-    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 105))
+def _wrap_text_by_pixel_width(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    max_width: int,
+    stroke_width: int,
+) -> list[str]:
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        candidate_width = draw.textbbox((0, 0), candidate, font=font, stroke_width=stroke_width)[2]
+        if candidate_width <= max_width:
+            current = candidate
+            continue
+        lines.append(current)
+        current = word
+    lines.append(current)
+    return lines
+
+
+def _line_height(draw: ImageDraw.ImageDraw, font: ImageFont.FreeTypeFont | ImageFont.ImageFont, stroke_width: int) -> int:
+    bbox = draw.textbbox((0, 0), "Ag", font=font, stroke_width=stroke_width)
+    return bbox[3] - bbox[1]
+
+
+def _draw_wrapped_block(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    y: int,
+    width: int,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    color: tuple[int, int, int, int],
+    stroke_width: int = 1,
+    line_gap: int = 8,
+) -> tuple[int, int]:
+    wrapped = _wrap_text_by_pixel_width(draw, text, font, max_width=max(80, width - 24), stroke_width=stroke_width)
+    h = _line_height(draw, font, stroke_width)
+    for part in wrapped:
+        text_bbox = draw.textbbox((0, 0), part, font=font, stroke_width=stroke_width)
+        text_width = text_bbox[2] - text_bbox[0]
+        x = max(0, (width - text_width) // 2)
+        draw.text((x, y), part, font=font, fill=color, stroke_width=stroke_width, stroke_fill=(0, 0, 0, 255))
+        y += h + line_gap
+    return y, len(wrapped)
+
+
+def _measure_wrapped_height(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    width: int,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    stroke_width: int = 1,
+    line_gap: int = 8,
+) -> int:
+    wrapped = _wrap_text_by_pixel_width(draw, text, font, max_width=max(80, width - 24), stroke_width=stroke_width)
+    h = _line_height(draw, font, stroke_width)
+    return len(wrapped) * h + max(0, len(wrapped) - 1) * line_gap
+
+
+def _build_lyrics_overlay(
+    lines,
+    current_index: int,
+    width: int,
+    height: int,
+    font_lyrics_regular,
+    font_lyrics_bold,
+) -> Image.Image:
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    visible = range(max(0, current_index - 2), min(len(lines), current_index + 3))
-    y = 22
-    for idx in visible:
-        prefix = "▶ " if idx == current_index else ""
-        color = (255, 255, 255, 255) if idx == current_index else (220, 220, 220, 255)
-        for part in wrap(prefix + lines[idx].text, width=34):
-            draw.text((24, y), part, font=font_lyrics, fill=color)
-            y += 52
+
+    active_text = lines[current_index].text
+    active_h = _measure_wrapped_height(draw, active_text, width, font_lyrics_bold)
+    center_y = max(0, (height - active_h) // 2)
+
+    prev_gap = 16
+    side_color = (215, 215, 215, 255)
+
+    prev_idx = current_index - 1
+    if prev_idx >= 0:
+        prev_h = _measure_wrapped_height(draw, lines[prev_idx].text, width, font_lyrics_regular)
+        prev_y = center_y - prev_gap - prev_h
+        if prev_y >= 0:
+            _draw_wrapped_block(draw, lines[prev_idx].text, prev_y, width, font_lyrics_regular, side_color)
+
+    active_bottom, _ = _draw_wrapped_block(
+        draw,
+        active_text,
+        center_y,
+        width,
+        font_lyrics_bold,
+        (255, 255, 255, 255),
+    )
+
+    next_y = active_bottom + prev_gap
+    for idx in range(current_index + 1, len(lines)):
+        next_h = _measure_wrapped_height(draw, lines[idx].text, width, font_lyrics_regular)
+        if next_y + next_h > height:
+            break
+        next_y, _ = _draw_wrapped_block(draw, lines[idx].text, next_y, width, font_lyrics_regular, side_color)
+        next_y += prev_gap
+
     return overlay
 
 
@@ -152,6 +253,7 @@ def _render_chunk(
     for frame_index in range(chunk_start, chunk_end):
         t = frame_index / fps
         frame = Image.fromarray(build_background_frame(t, width, height, palette)).convert("RGBA")
+        frame = frame.filter(ImageFilter.GaussianBlur(radius=5))
         current_idx = active_line_index_precomputed(start_times, t)
         frame.alpha_composite(lyrics_overlays[current_idx], (lx1, ly1))
         frames.append(frame.convert("RGB").tobytes())
@@ -177,14 +279,19 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
     else:
         cover_chain = f"[1:v]scale={cover_w}:{cover_h}[cover]"
 
+    artist_size = 58
+    title_size = 52
+    dash_size = 52
+    dash_y = (layout.artist_y + artist_size + layout.title_y - dash_size) // 2
+
     return (
         f"{cover_chain};"
         f"[0:v]format=nv12[base];"
         f"[base][cover]overlay={cover_x}:{cover_y}[v1];"
-        f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:{_drawtext_style(58)},"
-        f"drawtext=text='—':x=(w-text_w)/2:y={layout.dash_y}:{_drawtext_style(58)},"
-        f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:{_drawtext_style(52)},"
-        f"drawtext=text='{release_date}':x=(w-text_w)/2:y={layout.date_y}:{_drawtext_style(36)}[vout]"
+        f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:{_drawtext_style(artist_size, META_FONT_FILE)},"
+        f"drawtext=text='—':x=(w-text_w)/2:y={dash_y}:{_drawtext_style(dash_size, META_FONT_FILE)},"
+        f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:{_drawtext_style(title_size, META_FONT_FILE)},"
+        f"drawtext=text='{release_date}':x=(w-text_w)/2:y={layout.date_y}:{_drawtext_style(36, META_FONT_FILE)}[vout]"
     )
 
 
@@ -419,12 +526,13 @@ def render_video(
         chunk_size,
     )
 
-    font_lyrics = _load_font(46)
+    font_lyrics_regular = _load_font(38, LYRICS_FONT_REGULAR_FILE)
+    font_lyrics_bold = _load_font(42, LYRICS_FONT_BOLD_FILE)
     lx1, ly1, lx2, ly2 = layout.lyrics_box
     lyrics_width = lx2 - lx1
     lyrics_height = ly2 - ly1
     lyrics_overlays = {
-        idx: _build_lyrics_overlay(lines, idx, lyrics_width, lyrics_height, font_lyrics)
+        idx: _build_lyrics_overlay(lines, idx, lyrics_width, lyrics_height, font_lyrics_regular, font_lyrics_bold)
         for idx in range(-1, len(lines))
     }
 
