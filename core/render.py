@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from textwrap import wrap
 
@@ -59,13 +60,27 @@ def _resolve_video_codec(settings: RenderSettings) -> tuple[str, str]:
     return settings.video_codec_sw, "NVENC недоступен в ffmpeg -encoders"
 
 
-def _build_lyrics_overlay(
-    lines,
-    current_index: int,
+def _build_static_overlay(
+    project: ProjectData,
+    layout,
     width: int,
     height: int,
-    font_lyrics,
+    cover: Image.Image,
+    font_artist,
+    font_title,
+    font_date,
 ) -> Image.Image:
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    _draw_centered(draw, project.artist, layout.artist_y, width, font_artist, (255, 255, 255, 255))
+    _draw_centered(draw, "—", layout.dash_y, width, font_artist, (255, 255, 255, 255))
+    _draw_centered(draw, project.title, layout.title_y, width, font_title, (255, 255, 255, 255))
+    _draw_centered(draw, project.release_date, layout.date_y, width, font_date, (245, 245, 245, 255))
+    overlay.paste(cover.convert("RGBA"), (layout.cover_box[0], layout.cover_box[1]))
+    return overlay
+
+
+def _build_lyrics_overlay(lines, current_index: int, width: int, height: int, font_lyrics) -> Image.Image:
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 105))
     draw = ImageDraw.Draw(overlay)
     visible = range(max(0, current_index - 2), min(len(lines), current_index + 3))
@@ -73,8 +88,7 @@ def _build_lyrics_overlay(
     for idx in visible:
         prefix = "▶ " if idx == current_index else ""
         color = (255, 255, 255, 255) if idx == current_index else (220, 220, 220, 255)
-        text = prefix + lines[idx].text
-        for part in wrap(text, width=34):
+        for part in wrap(prefix + lines[idx].text, width=34):
             draw.text((24, y), part, font=font_lyrics, fill=color)
             y += 52
     return overlay
@@ -101,7 +115,6 @@ def render_video(
 
     codec, codec_reason = _resolve_video_codec(settings)
     logger.info("Выбран видеокодек: %s (%s)", codec, codec_reason)
-
     logger.info(
         "Параметры рендера: %dx%d, fps=%d, длительность=%.2fs, кадров=%d",
         width,
@@ -119,11 +132,13 @@ def render_video(
     font_lyrics = _load_font(46)
     font_date = _load_font(36)
 
+    static_overlay = _build_static_overlay(project, layout, width, height, cover, font_artist, font_title, font_date)
+
     lx1, ly1, lx2, ly2 = layout.lyrics_box
     lyrics_width = lx2 - lx1
     lyrics_height = ly2 - ly1
-    cached_idx = None
-    cached_overlay = None
+    cached_idx: int | None = None
+    cached_lyrics_overlay: Image.Image | None = None
 
     cmd = [
         "ffmpeg",
@@ -147,10 +162,11 @@ def render_video(
         "-c:v",
         codec,
     ]
+
     if codec == settings.video_codec_hw:
-        cmd.extend(["-preset", "p5", "-cq", "22"])
+        cmd.extend(["-preset", settings.nvenc_preset, "-cq", str(settings.nvenc_cq), "-b:v", "0"])
     else:
-        cmd.extend(["-preset", "medium", "-crf", "21"])
+        cmd.extend(["-preset", settings.x264_preset, "-crf", str(settings.x264_crf), "-threads", "0"])
 
     cmd.extend(
         [
@@ -166,41 +182,36 @@ def render_video(
     logger.info("Старт ffmpeg pipe: %s", " ".join(cmd))
     process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
+    render_started = time.perf_counter()
     try:
         assert process.stdin is not None
         logger.info("Начало записи кадров в ffmpeg stdin")
         for i in range(total_frames):
             t = i / fps
-            bg = build_background_frame(t, width, height, palette)
-            img = Image.fromarray(bg)
-            draw = ImageDraw.Draw(img)
-
-            _draw_centered(draw, project.artist, layout.artist_y, width, font_artist, (255, 255, 255))
-            _draw_centered(draw, "—", layout.dash_y, width, font_artist, (255, 255, 255))
-            _draw_centered(draw, project.title, layout.title_y, width, font_title, (255, 255, 255))
-            img.paste(cover, (layout.cover_box[0], layout.cover_box[1]))
+            frame = Image.fromarray(build_background_frame(t, width, height, palette)).convert("RGBA")
+            frame.alpha_composite(static_overlay)
 
             current_idx = active_line_index_precomputed(start_times, t)
-            if cached_overlay is None or current_idx != cached_idx:
+            if cached_lyrics_overlay is None or current_idx != cached_idx:
                 cached_idx = current_idx
-                cached_overlay = _build_lyrics_overlay(lines, current_idx, lyrics_width, lyrics_height, font_lyrics)
-            img.paste(cached_overlay, (lx1, ly1), cached_overlay)
+                cached_lyrics_overlay = _build_lyrics_overlay(lines, current_idx, lyrics_width, lyrics_height, font_lyrics)
+            frame.alpha_composite(cached_lyrics_overlay, (lx1, ly1))
 
-            _draw_centered(draw, project.release_date, layout.date_y, width, font_date, (245, 245, 245))
-
-            process.stdin.write(np.array(img, dtype=np.uint8).tobytes())
+            process.stdin.write(frame.convert("RGB").tobytes())
 
             if progress_callback and (i % max(1, fps // 2) == 0):
                 progress_callback(int(i / total_frames * 100))
 
         logger.info("Завершение записи кадров, закрытие stdin")
         process.stdin.close()
-        stderr = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
+        stderr_text = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
         return_code = process.wait()
-        logger.info("ffmpeg завершен с кодом: %s", return_code)
+        elapsed = time.perf_counter() - render_started
+        fps_actual = (total_frames / elapsed) if elapsed > 0 else 0.0
+        logger.info("ffmpeg завершен с кодом: %s, фактическая скорость=%.2f fps", return_code, fps_actual)
         if return_code != 0:
-            logger.error("ffmpeg ошибка: %s", stderr[-2000:])
-            raise RuntimeError(f"Ошибка ffmpeg: {stderr[-1200:]}")
+            logger.error("ffmpeg ошибка: %s", stderr_text[-2000:])
+            raise RuntimeError(f"Ошибка ffmpeg: {stderr_text[-1200:]}")
     finally:
         if process.stdin and not process.stdin.closed:
             process.stdin.close()

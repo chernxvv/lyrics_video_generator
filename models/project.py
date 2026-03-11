@@ -29,6 +29,10 @@ class RenderSettings:
     prefer_hw_encode: bool = True
     video_codec_hw: str = "h264_nvenc"
     video_codec_sw: str = "libx264"
+    nvenc_preset: str = "p1"
+    nvenc_cq: int = 23
+    x264_preset: str = "medium"
+    x264_crf: int = 21
     audio_codec: str = "aac"
     pixel_format: str = "yuv420p"
 
