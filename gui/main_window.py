@@ -5,6 +5,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -15,8 +17,8 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QComboBox,
     QProgressBar,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -29,6 +31,33 @@ from core.validation import validate_project
 from models import LyricLine, ProjectData, RenderSettings
 
 logger = logging.getLogger(__name__)
+
+
+class PerformanceSettingsDialog(QDialog):
+    def __init__(self, thread_count: int, chunk_size: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Настройки производительности")
+        layout = QFormLayout(self)
+
+        self.threads_spin = QSpinBox()
+        self.threads_spin.setRange(1, 32)
+        self.threads_spin.setValue(thread_count)
+
+        self.chunk_spin = QSpinBox()
+        self.chunk_spin.setRange(1, 600)
+        self.chunk_spin.setValue(chunk_size)
+
+        layout.addRow("Количество потоков", self.threads_spin)
+        layout.addRow("Размер чанка (кадров)", self.chunk_spin)
+
+        buttons = QHBoxLayout()
+        save_btn = QPushButton("Сохранить")
+        cancel_btn = QPushButton("Отмена")
+        save_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        buttons.addWidget(save_btn)
+        buttons.addWidget(cancel_btn)
+        layout.addRow(buttons)
 
 
 class RenderWorker(QThread):
@@ -44,7 +73,12 @@ class RenderWorker(QThread):
         self.mode = mode
 
     def run(self):
-        logger.info("Worker: запуск генерации, режим=%s", self.mode)
+        logger.info(
+            "Worker: запуск генерации, режим=%s, threads=%d, chunk=%d",
+            self.mode,
+            self.settings.thread_count,
+            self.settings.frame_chunk_size,
+        )
         try:
             duration = validate_project(self.project)
             palette = extract_dominant_palette(Path(self.project.image_path))
@@ -57,7 +91,9 @@ class RenderWorker(QThread):
                 progress_callback=lambda value: self.progress.emit(value),
             )
             logger.info("Worker: генерация завершена, режим=%s, codec=%s", self.mode, codec)
-            self.finished_ok.emit(f"{self.output_path}|{self.mode}|{codec}")
+            self.finished_ok.emit(
+                f"{self.output_path}|{self.mode}|{codec}|{self.settings.thread_count}|{self.settings.frame_chunk_size}"
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Worker: ошибка генерации")
             self.failed.emit(str(exc))
@@ -70,6 +106,8 @@ class MainWindow(QMainWindow):
         self.resize(980, 760)
         self.project = ProjectData()
         self._worker: RenderWorker | None = None
+        self.thread_count = 2
+        self.chunk_size = 60
         self._build_ui()
         logger.info("Окно приложения инициализировано")
 
@@ -118,6 +156,8 @@ class MainWindow(QMainWindow):
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Preview", "Final"])
         self.mode_combo.setCurrentText("Final")
+        self.settings_button = QPushButton("Настройки производительности")
+        self.settings_button.clicked.connect(self.open_performance_settings)
         self.status_label = QLabel("Режим: Final")
         self.mode_combo.currentTextChanged.connect(lambda mode: self.status_label.setText(f"Режим: {mode}"))
         self.progress = QProgressBar()
@@ -126,6 +166,7 @@ class MainWindow(QMainWindow):
         self.generate_button.clicked.connect(self.generate)
         actions_layout.addWidget(QLabel("Режим рендера"))
         actions_layout.addWidget(self.mode_combo)
+        actions_layout.addWidget(self.settings_button)
         actions_layout.addWidget(self.status_label)
         actions_layout.addWidget(self.generate_button)
         actions_layout.addWidget(self.progress)
@@ -136,6 +177,16 @@ class MainWindow(QMainWindow):
         main.addWidget(actions)
 
         self.setCentralWidget(root)
+
+    def open_performance_settings(self):
+        dialog = PerformanceSettingsDialog(self.thread_count, self.chunk_size, self)
+        if dialog.exec():
+            self.thread_count = dialog.threads_spin.value()
+            self.chunk_size = dialog.chunk_spin.value()
+            self.status_label.setText(
+                f"Режим: {self.mode_combo.currentText()} | Потоки: {self.thread_count}, чанк: {self.chunk_size}"
+            )
+            logger.info("Обновлены настройки производительности: threads=%d, chunk=%d", self.thread_count, self.chunk_size)
 
     def add_row(self):
         row = self.table.rowCount()
@@ -186,9 +237,10 @@ class MainWindow(QMainWindow):
 
     def _selected_render_settings(self) -> tuple[str, RenderSettings]:
         mode = self.mode_combo.currentText()
-        if mode == "Preview":
-            return mode, RenderSettings.preview()
-        return mode, RenderSettings.final()
+        settings = RenderSettings.preview() if mode == "Preview" else RenderSettings.final()
+        settings.thread_count = self.thread_count
+        settings.frame_chunk_size = self.chunk_size
+        return mode, settings
 
     def generate(self):
         self._collect_project()
@@ -199,14 +251,16 @@ class MainWindow(QMainWindow):
 
         mode, settings = self._selected_render_settings()
         logger.info(
-            "Старт генерации в файл: %s, режим=%s, %dx%d@%dfps",
+            "Старт генерации в файл: %s, режим=%s, %dx%d@%dfps, threads=%d, chunk=%d",
             output,
             mode,
             settings.width,
             settings.height,
             settings.fps,
+            settings.thread_count,
+            settings.frame_chunk_size,
         )
-        self.status_label.setText(f"Рендер: {mode}, подготовка...")
+        self.status_label.setText(f"Рендер: {mode}, threads={settings.thread_count}, chunk={settings.frame_chunk_size}")
         self.generate_button.setEnabled(False)
         self.progress.setValue(0)
         self._worker = RenderWorker(self.project, Path(output), settings, mode)
@@ -216,11 +270,22 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def _on_success(self, payload: str):
-        output, mode, codec = payload.split("|", 2)
-        logger.info("Генерация успешно завершена: %s, режим=%s, codec=%s", output, mode, codec)
-        self.status_label.setText(f"Готово: {mode}, codec={codec}")
+        output, mode, codec, threads, chunk = payload.split("|", 4)
+        logger.info(
+            "Генерация успешно завершена: %s, режим=%s, codec=%s, threads=%s, chunk=%s",
+            output,
+            mode,
+            codec,
+            threads,
+            chunk,
+        )
+        self.status_label.setText(f"Готово: {mode}, codec={codec}, threads={threads}, chunk={chunk}")
         self.generate_button.setEnabled(True)
-        QMessageBox.information(self, "Готово", f"Видео сохранено:\n{output}\n\nРежим: {mode}\nКодек: {codec}")
+        QMessageBox.information(
+            self,
+            "Готово",
+            f"Видео сохранено:\n{output}\n\nРежим: {mode}\nКодек: {codec}\nПотоки: {threads}\nЧанк: {chunk}",
+        )
 
     def _on_fail(self, error: str):
         logger.error("Генерация завершена с ошибкой: %s", error)

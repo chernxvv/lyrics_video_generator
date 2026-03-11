@@ -4,10 +4,10 @@ import logging
 import shutil
 import subprocess
 import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from textwrap import wrap
 
-import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from core.background import build_background_frame
@@ -60,16 +60,7 @@ def _resolve_video_codec(settings: RenderSettings) -> tuple[str, str]:
     return settings.video_codec_sw, "NVENC недоступен в ffmpeg -encoders"
 
 
-def _build_static_overlay(
-    project: ProjectData,
-    layout,
-    width: int,
-    height: int,
-    cover: Image.Image,
-    font_artist,
-    font_title,
-    font_date,
-) -> Image.Image:
+def _build_static_overlay(project: ProjectData, layout, width: int, height: int, cover: Image.Image, font_artist, font_title, font_date) -> Image.Image:
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     _draw_centered(draw, project.artist, layout.artist_y, width, font_artist, (255, 255, 255, 255))
@@ -94,6 +85,30 @@ def _build_lyrics_overlay(lines, current_index: int, width: int, height: int, fo
     return overlay
 
 
+def _render_chunk(
+    chunk_start: int,
+    chunk_end: int,
+    fps: int,
+    width: int,
+    height: int,
+    palette: PaletteInfo,
+    static_overlay: Image.Image,
+    lyrics_overlays: dict[int, Image.Image],
+    start_times: list[float],
+    lyrics_pos: tuple[int, int],
+) -> tuple[int, list[bytes]]:
+    lx1, ly1 = lyrics_pos
+    frames: list[bytes] = []
+    for frame_index in range(chunk_start, chunk_end):
+        t = frame_index / fps
+        frame = Image.fromarray(build_background_frame(t, width, height, palette)).convert("RGBA")
+        frame.alpha_composite(static_overlay)
+        current_idx = active_line_index_precomputed(start_times, t)
+        frame.alpha_composite(lyrics_overlays[current_idx], (lx1, ly1))
+        frames.append(frame.convert("RGB").tobytes())
+    return chunk_start, frames
+
+
 def render_video(
     project: ProjectData,
     palette: PaletteInfo,
@@ -113,15 +128,20 @@ def render_video(
     lines, start_times = prepare_timeline(project.lyrics)
     layout = compute_layout(width, height)
 
+    thread_count = max(1, settings.thread_count)
+    chunk_size = max(1, settings.frame_chunk_size)
+
     codec, codec_reason = _resolve_video_codec(settings)
     logger.info("Выбран видеокодек: %s (%s)", codec, codec_reason)
     logger.info(
-        "Параметры рендера: %dx%d, fps=%d, длительность=%.2fs, кадров=%d",
+        "Параметры рендера: %dx%d, fps=%d, длительность=%.2fs, кадров=%d, threads=%d, chunk=%d",
         width,
         height,
         fps,
         duration,
         total_frames,
+        thread_count,
+        chunk_size,
     )
 
     cover = Image.open(project.image_path).convert("RGB")
@@ -133,12 +153,13 @@ def render_video(
     font_date = _load_font(36)
 
     static_overlay = _build_static_overlay(project, layout, width, height, cover, font_artist, font_title, font_date)
-
     lx1, ly1, lx2, ly2 = layout.lyrics_box
     lyrics_width = lx2 - lx1
     lyrics_height = ly2 - ly1
-    cached_idx: int | None = None
-    cached_lyrics_overlay: Image.Image | None = None
+    lyrics_overlays = {
+        idx: _build_lyrics_overlay(lines, idx, lyrics_width, lyrics_height, font_lyrics)
+        for idx in range(-1, len(lines))
+    }
 
     cmd = [
         "ffmpeg",
@@ -162,45 +183,81 @@ def render_video(
         "-c:v",
         codec,
     ]
-
     if codec == settings.video_codec_hw:
         cmd.extend(["-preset", settings.nvenc_preset, "-cq", str(settings.nvenc_cq), "-b:v", "0"])
     else:
         cmd.extend(["-preset", settings.x264_preset, "-crf", str(settings.x264_crf), "-threads", "0"])
 
-    cmd.extend(
-        [
-            "-pix_fmt",
-            settings.pixel_format,
-            "-c:a",
-            settings.audio_codec,
-            "-shortest",
-            str(output_path),
-        ]
-    )
+    cmd.extend(["-pix_fmt", settings.pixel_format, "-c:a", settings.audio_codec, "-shortest", str(output_path)])
 
     logger.info("Старт ffmpeg pipe: %s", " ".join(cmd))
     process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
     render_started = time.perf_counter()
+    chunks = [(i, min(total_frames, i + chunk_size)) for i in range(0, total_frames, chunk_size)]
+
     try:
         assert process.stdin is not None
-        logger.info("Начало записи кадров в ffmpeg stdin")
-        for i in range(total_frames):
-            t = i / fps
-            frame = Image.fromarray(build_background_frame(t, width, height, palette)).convert("RGBA")
-            frame.alpha_composite(static_overlay)
+        logger.info("Начало многопоточной генерации кадров")
+        with ThreadPoolExecutor(max_workers=thread_count) as executor:
+            pending: dict[Future, int] = {}
+            ready_chunks: dict[int, list[bytes]] = {}
+            next_submit = 0
+            next_write = 0
+            written_frames = 0
+            max_pending = max(1, thread_count * 2)
 
-            current_idx = active_line_index_precomputed(start_times, t)
-            if cached_lyrics_overlay is None or current_idx != cached_idx:
-                cached_idx = current_idx
-                cached_lyrics_overlay = _build_lyrics_overlay(lines, current_idx, lyrics_width, lyrics_height, font_lyrics)
-            frame.alpha_composite(cached_lyrics_overlay, (lx1, ly1))
+            while next_submit < len(chunks) and len(pending) < max_pending:
+                start_idx, end_idx = chunks[next_submit]
+                fut = executor.submit(
+                    _render_chunk,
+                    start_idx,
+                    end_idx,
+                    fps,
+                    width,
+                    height,
+                    palette,
+                    static_overlay,
+                    lyrics_overlays,
+                    start_times,
+                    (lx1, ly1),
+                )
+                pending[fut] = start_idx
+                next_submit += 1
 
-            process.stdin.write(frame.convert("RGB").tobytes())
+            while pending:
+                done, _ = wait(pending.keys(), return_when=FIRST_COMPLETED)
+                for fut in done:
+                    start_idx = pending.pop(fut)
+                    chunk_start, chunk_frames = fut.result()
+                    ready_chunks[chunk_start] = chunk_frames
 
-            if progress_callback and (i % max(1, fps // 2) == 0):
-                progress_callback(int(i / total_frames * 100))
+                while next_write in ready_chunks:
+                    chunk_frames = ready_chunks.pop(next_write)
+                    for frame_bytes in chunk_frames:
+                        process.stdin.write(frame_bytes)
+                    written_frames += len(chunk_frames)
+                    if progress_callback:
+                        progress_callback(int(written_frames / total_frames * 100))
+                    next_write += chunk_size
+
+                while next_submit < len(chunks) and len(pending) < max_pending:
+                    start_idx, end_idx = chunks[next_submit]
+                    fut = executor.submit(
+                        _render_chunk,
+                        start_idx,
+                        end_idx,
+                        fps,
+                        width,
+                        height,
+                        palette,
+                        static_overlay,
+                        lyrics_overlays,
+                        start_times,
+                        (lx1, ly1),
+                    )
+                    pending[fut] = start_idx
+                    next_submit += 1
 
         logger.info("Завершение записи кадров, закрытие stdin")
         process.stdin.close()

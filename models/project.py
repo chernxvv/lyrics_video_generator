@@ -33,6 +33,8 @@ class RenderSettings:
     nvenc_cq: int = 23
     x264_preset: str = "medium"
     x264_crf: int = 21
+    thread_count: int = 2
+    frame_chunk_size: int = 60
     audio_codec: str = "aac"
     pixel_format: str = "yuv420p"
 
