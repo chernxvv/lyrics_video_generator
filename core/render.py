@@ -27,12 +27,6 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _draw_centered(draw: ImageDraw.ImageDraw, text: str, y: int, width: int, font, fill):
-    bbox = draw.textbbox((0, 0), text, font=font)
-    x = (width - (bbox[2] - bbox[0])) // 2
-    draw.text((x, y), text, font=font, fill=fill)
-
-
 def _ensure_ffmpeg_available() -> None:
     logger.info("Проверка доступности ffmpeg")
     if shutil.which("ffmpeg") is None:
@@ -41,15 +35,24 @@ def _ensure_ffmpeg_available() -> None:
         )
 
 
-def _supports_encoder(encoder_name: str) -> bool:
+def _ffmpeg_probe_output(command: list[str]) -> str:
     try:
-        result = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, check=False)
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
     except OSError:
-        return False
+        return ""
     if result.returncode != 0:
-        logger.warning("Не удалось проверить список энкодеров ffmpeg: %s", result.stderr[-500:])
-        return False
-    return encoder_name in result.stdout
+        return ""
+    return result.stdout
+
+
+def _supports_encoder(encoder_name: str) -> bool:
+    output = _ffmpeg_probe_output(["ffmpeg", "-hide_banner", "-encoders"])
+    return encoder_name in output
+
+
+def _supports_filter(filter_name: str) -> bool:
+    output = _ffmpeg_probe_output(["ffmpeg", "-hide_banner", "-filters"])
+    return filter_name in output
 
 
 def _resolve_video_codec(settings: RenderSettings) -> tuple[str, str]:
@@ -60,15 +63,14 @@ def _resolve_video_codec(settings: RenderSettings) -> tuple[str, str]:
     return settings.video_codec_sw, "NVENC недоступен в ffmpeg -encoders"
 
 
-def _build_static_overlay(project: ProjectData, layout, width: int, height: int, cover: Image.Image, font_artist, font_title, font_date) -> Image.Image:
-    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    _draw_centered(draw, project.artist, layout.artist_y, width, font_artist, (255, 255, 255, 255))
-    _draw_centered(draw, "—", layout.dash_y, width, font_artist, (255, 255, 255, 255))
-    _draw_centered(draw, project.title, layout.title_y, width, font_title, (255, 255, 255, 255))
-    _draw_centered(draw, project.release_date, layout.date_y, width, font_date, (245, 245, 245, 255))
-    overlay.paste(cover.convert("RGBA"), (layout.cover_box[0], layout.cover_box[1]))
-    return overlay
+def _escape_drawtext(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace("%", "\\%")
+        .replace("\n", " ")
+    )
 
 
 def _build_lyrics_overlay(lines, current_index: int, width: int, height: int, font_lyrics) -> Image.Image:
@@ -92,7 +94,6 @@ def _render_chunk(
     width: int,
     height: int,
     palette: PaletteInfo,
-    static_overlay: Image.Image,
     lyrics_overlays: dict[int, Image.Image],
     start_times: list[float],
     lyrics_pos: tuple[int, int],
@@ -102,11 +103,38 @@ def _render_chunk(
     for frame_index in range(chunk_start, chunk_end):
         t = frame_index / fps
         frame = Image.fromarray(build_background_frame(t, width, height, palette)).convert("RGBA")
-        frame.alpha_composite(static_overlay)
         current_idx = active_line_index_precomputed(start_times, t)
         frame.alpha_composite(lyrics_overlays[current_idx], (lx1, ly1))
         frames.append(frame.convert("RGB").tobytes())
     return chunk_start, frames
+
+
+def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
+    cover_w = layout.cover_box[2] - layout.cover_box[0]
+    cover_h = layout.cover_box[3] - layout.cover_box[1]
+    cover_x = layout.cover_box[0]
+    cover_y = layout.cover_box[1]
+
+    artist = _escape_drawtext(project.artist)
+    title = _escape_drawtext(project.title)
+    release_date = _escape_drawtext(project.release_date)
+
+    if use_cuda:
+        cover_chain = (
+            f"[1:v]format=rgba,hwupload_cuda,scale_cuda={cover_w}:{cover_h},"
+            f"hwdownload,format=rgba[cover]"
+        )
+    else:
+        cover_chain = f"[1:v]scale={cover_w}:{cover_h}[cover]"
+
+    return (
+        f"{cover_chain};"
+        f"[0:v][cover]overlay={cover_x}:{cover_y}[v1];"
+        f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:fontsize=58:fontcolor=white,"
+        f"drawtext=text='—':x=(w-text_w)/2:y={layout.dash_y}:fontsize=58:fontcolor=white,"
+        f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:fontsize=52:fontcolor=white,"
+        f"drawtext=text='{release_date}':x=(w-text_w)/2:y={layout.date_y}:fontsize=36:fontcolor=white[vout]"
+    )
 
 
 def render_video(
@@ -132,7 +160,9 @@ def render_video(
     chunk_size = max(1, settings.frame_chunk_size)
 
     codec, codec_reason = _resolve_video_codec(settings)
+    use_cuda_filters = codec == settings.video_codec_hw and _supports_filter("scale_cuda") and _supports_filter("hwupload_cuda")
     logger.info("Выбран видеокодек: %s (%s)", codec, codec_reason)
+    logger.info("CUDA filtergraph: %s", "enabled" if use_cuda_filters else "disabled")
     logger.info(
         "Параметры рендера: %dx%d, fps=%d, длительность=%.2fs, кадров=%d, threads=%d, chunk=%d",
         width,
@@ -144,22 +174,13 @@ def render_video(
         chunk_size,
     )
 
-    cover = Image.open(project.image_path).convert("RGB")
-    cover = cover.resize((layout.cover_box[2] - layout.cover_box[0], layout.cover_box[3] - layout.cover_box[1]))
-
-    font_artist = _load_font(58)
-    font_title = _load_font(52)
     font_lyrics = _load_font(46)
-    font_date = _load_font(36)
-
-    static_overlay = _build_static_overlay(project, layout, width, height, cover, font_artist, font_title, font_date)
     lx1, ly1, lx2, ly2 = layout.lyrics_box
     lyrics_width = lx2 - lx1
     lyrics_height = ly2 - ly1
-    lyrics_overlays = {
-        idx: _build_lyrics_overlay(lines, idx, lyrics_width, lyrics_height, font_lyrics)
-        for idx in range(-1, len(lines))
-    }
+    lyrics_overlays = {idx: _build_lyrics_overlay(lines, idx, lyrics_width, lyrics_height, font_lyrics) for idx in range(-1, len(lines))}
+
+    filter_complex = _build_filter_complex(project, layout, use_cuda_filters)
 
     cmd = [
         "ffmpeg",
@@ -174,15 +195,25 @@ def render_video(
         str(fps),
         "-i",
         "-",
+        "-loop",
+        "1",
+        "-i",
+        str(project.image_path),
         "-i",
         str(project.audio_path),
+        "-filter_complex",
+        filter_complex,
         "-map",
-        "0:v:0",
+        "[vout]",
         "-map",
-        "1:a:0",
+        "2:a:0",
         "-c:v",
         codec,
     ]
+
+    if use_cuda_filters:
+        cmd[1:1] = ["-init_hw_device", "cuda=gpu:0", "-filter_hw_device", "gpu"]
+
     if codec == settings.video_codec_hw:
         cmd.extend(["-preset", settings.nvenc_preset, "-cq", str(settings.nvenc_cq), "-b:v", "0"])
     else:
@@ -217,7 +248,6 @@ def render_video(
                     width,
                     height,
                     palette,
-                    static_overlay,
                     lyrics_overlays,
                     start_times,
                     (lx1, ly1),
@@ -228,7 +258,7 @@ def render_video(
             while pending:
                 done, _ = wait(pending.keys(), return_when=FIRST_COMPLETED)
                 for fut in done:
-                    start_idx = pending.pop(fut)
+                    pending.pop(fut)
                     chunk_start, chunk_frames = fut.result()
                     ready_chunks[chunk_start] = chunk_frames
 
@@ -251,7 +281,6 @@ def render_video(
                         width,
                         height,
                         palette,
-                        static_overlay,
                         lyrics_overlays,
                         start_times,
                         (lx1, ly1),

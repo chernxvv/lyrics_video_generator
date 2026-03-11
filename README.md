@@ -75,6 +75,15 @@ ffmpeg -hide_banner -encoders | rg h264_nvenc
 
 Если строка найдена — NVENC доступен из текущей сборки ffmpeg.
 
+### Filtergraph и CUDA-preprocess
+
+Часть операций перенесена из Python в `ffmpeg filter_complex`:
+- масштабирование и наложение обложки;
+- статичный текст (artist/title/date) через `drawtext`.
+
+При доступности NVENC и фильтров `scale_cuda`/`hwupload_cuda` включается CUDA-препроцессинг для обложки внутри filtergraph.
+Если CUDA-фильтры недоступны, автоматически используется CPU filtergraph fallback.
+
 ## Что влияет на скорость рендера
 
 - Разрешение и FPS (Final тяжелее, чем Preview).
