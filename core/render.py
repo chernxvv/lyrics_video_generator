@@ -63,16 +63,12 @@ def _probe_cuda_runtime() -> tuple[bool, str]:
         "-hide_banner",
         "-loglevel",
         "error",
-        "-init_hw_device",
-        "cuda=gpu:0",
-        "-filter_hw_device",
-        "gpu",
         "-f",
         "lavfi",
         "-i",
         "color=c=black:s=16x16:d=0.1",
         "-vf",
-        "hwupload_cuda,scale_cuda=16:16,hwdownload,format=rgb24",
+        "format=nv12,hwupload_cuda,scale_cuda=16:16:format=nv12,hwdownload,format=rgb24",
         "-frames:v",
         "1",
         "-f",
@@ -155,7 +151,8 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
 
     if use_cuda:
         cover_chain = (
-            f"[1:v]format=rgba,hwupload_cuda,scale_cuda={cover_w}:{cover_h},"
+            f"[1:v]format=nv12,hwupload_cuda,"
+            f"scale_cuda={cover_w}:{cover_h}:format=nv12,"
             f"hwdownload,format=rgba[cover]"
         )
     else:
@@ -448,8 +445,6 @@ def render_video(
         codec,
     ]
 
-    if use_cuda_filters:
-        cmd[1:1] = ["-init_hw_device", "cuda=gpu:0", "-filter_hw_device", "gpu"]
 
     if codec == settings.video_codec_hw:
         cmd.extend(["-preset", settings.nvenc_preset, "-cq", str(settings.nvenc_cq), "-b:v", "0"])
@@ -481,7 +476,7 @@ def render_video(
         if use_cuda_filters and _is_cuda_runtime_failure(err):
             logger.warning("CUDA фильтры недоступны на рантайме, fallback на CPU filtergraph")
             fallback_filter = _build_filter_complex(project, layout, use_cuda=False)
-            fallback_cmd = [arg for arg in cmd if arg not in ["-init_hw_device", "cuda=gpu:0", "-filter_hw_device", "gpu"]]
+            fallback_cmd = cmd.copy()
             fc_idx = fallback_cmd.index("-filter_complex")
             fallback_cmd[fc_idx + 1] = fallback_filter
             _render_stream_to_ffmpeg(
