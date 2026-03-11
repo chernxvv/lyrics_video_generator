@@ -68,7 +68,7 @@ def _probe_cuda_runtime() -> tuple[bool, str]:
         "-i",
         "color=c=black:s=16x16:d=0.1",
         "-vf",
-        "format=nv12,hwupload_cuda,scale_cuda=16:16:format=nv12,hwdownload,format=rgb24",
+        "format=nv12,hwupload_cuda,scale_cuda=16:16,hwdownload,format=rgb24",
         "-frames:v",
         "1",
         "-f",
@@ -152,7 +152,7 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
     if use_cuda:
         cover_chain = (
             f"[1:v]format=nv12,hwupload_cuda,"
-            f"scale_cuda={cover_w}:{cover_h}:format=nv12,"
+            f"scale_cuda={cover_w}:{cover_h},"
             f"hwdownload,format=rgba[cover]"
         )
     else:
