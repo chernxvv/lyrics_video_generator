@@ -18,6 +18,10 @@ from models import PaletteInfo, ProjectData, RenderSettings
 
 logger = logging.getLogger(__name__)
 
+
+class RenderError(RuntimeError):
+    pass
+
 FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
 LYRICS_FONT_REGULAR_FILE = "NotoSerif-Regular.ttf"
 LYRICS_FONT_BOLD_FILE = "NotoSerif-Bold.ttf"
@@ -27,7 +31,7 @@ META_FONT_FILE = "NotoSerif-Regular.ttf"
 def _require_font_path(filename: str) -> Path:
     font_path = FONT_DIR / filename
     if not font_path.exists():
-        raise RuntimeError(
+        raise RenderError(
             "Не найден обязательный шрифт: "
             f"{font_path}. "
             "Создайте папку assets/fonts и положите туда нужные .ttf файлы: "
@@ -41,7 +45,7 @@ def _load_font(size: int, filename: str) -> ImageFont.FreeTypeFont | ImageFont.I
     try:
         return ImageFont.truetype(str(font_path), size=size)
     except OSError as exc:
-        raise RuntimeError(f"Не удалось загрузить шрифт {font_path}: {exc}") from exc
+        raise RenderError(f"Не удалось загрузить шрифт {font_path}: {exc}") from exc
 
 
 
@@ -49,7 +53,7 @@ def _load_font(size: int, filename: str) -> ImageFont.FreeTypeFont | ImageFont.I
 def _ensure_ffmpeg_available() -> None:
     logger.info("Проверка доступности ffmpeg")
     if shutil.which("ffmpeg") is None:
-        raise RuntimeError(
+        raise RenderError(
             "Не найден ffmpeg в PATH. Установите FFmpeg и добавьте ffmpeg в PATH перед генерацией видео."
         )
 
@@ -274,11 +278,18 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
     release_date = _escape_drawtext(project.release_date)
 
     if use_cuda:
-        logger.info("Для обложки используется software scale/crop без внутренних полей")
-    cover_chain = (
-        f"[1:v]scale={cover_w}:{cover_h}:force_original_aspect_ratio=increase,"
-        f"crop={cover_w}:{cover_h}:(in_w-{cover_w})/2:(in_h-{cover_h})/2[cover]"
-    )
+        logger.info("Выбрана ветка filter_complex: CUDA (hwupload_cuda/scale_cuda/hwdownload)")
+        cover_chain = (
+            f"[1:v]format=nv12,hwupload_cuda,"
+            f"scale_cuda={cover_w}:{cover_h}:force_original_aspect_ratio=increase:format=nv12,"
+            f"hwdownload,format=nv12,crop={cover_w}:{cover_h}:(in_w-{cover_w})/2:(in_h-{cover_h})/2[cover]"
+        )
+    else:
+        logger.info("Выбрана ветка filter_complex: CPU (scale/crop)")
+        cover_chain = (
+            f"[1:v]scale={cover_w}:{cover_h}:force_original_aspect_ratio=increase,"
+            f"crop={cover_w}:{cover_h}:(in_w-{cover_w})/2:(in_h-{cover_h})/2[cover]"
+        )
 
     artist_size = 58
     title_size = 52
@@ -328,11 +339,6 @@ def _is_cuda_runtime_failure(stderr_text: str) -> bool:
         "init_hw_device",
     )
     return any(m in low for m in markers)
-
-
-def _is_inconclusive_cuda_probe(stderr_text: str) -> bool:
-    low = stderr_text.lower()
-    return "wrapped_avframe" in low or "nothing was written into output file" in low
 
 
 def _render_stream_to_ffmpeg(
@@ -397,7 +403,7 @@ def _render_stream_to_ffmpeg(
             while pending:
                 if process.poll() is not None:
                     stderr_text = _collect_stderr_text(stderr_lines)
-                    raise RuntimeError(f"ffmpeg завершился до окончания генерации кадров: {stderr_text[-1200:]}")
+                    raise RenderError(f"ffmpeg завершился до окончания генерации кадров: {stderr_text[-1200:]}")
 
                 done, _ = wait(pending.keys(), return_when=FIRST_COMPLETED, timeout=1.0)
                 if not done:
@@ -428,7 +434,7 @@ def _render_stream_to_ffmpeg(
                             process.stdin.write(frame_bytes)
                     except BrokenPipeError as exc:
                         stderr_text = _collect_stderr_text(stderr_lines)
-                        raise RuntimeError(f"Broken pipe при записи в ffmpeg: {stderr_text[-1200:]}") from exc
+                        raise RenderError(f"Broken pipe при записи в ffmpeg: {stderr_text[-1200:]}") from exc
 
                     written_frames += len(chunk_frames)
                     written_chunks += 1
@@ -474,7 +480,7 @@ def _render_stream_to_ffmpeg(
         if return_code != 0:
             stderr_text = _collect_stderr_text(stderr_lines)
             logger.error("ffmpeg ошибка: %s", stderr_text[-2000:])
-            raise RuntimeError(f"Ошибка ffmpeg: {stderr_text[-1200:]}")
+            raise RenderError(f"Ошибка ffmpeg: {stderr_text[-1200:]}")
 
         return fps_actual
     finally:
@@ -503,7 +509,7 @@ def render_video(
     width, height, fps = settings.width, settings.height, settings.fps
     total_frames = int(duration * fps)
     if total_frames <= 0:
-        raise RuntimeError("Ошибка рендера: длительность слишком мала, кадров=0")
+        raise RenderError("Ошибка рендера: длительность слишком мала, кадров=0")
 
     lines, start_times = prepare_timeline(project.lyrics)
     layout = compute_layout(width, height)
@@ -513,8 +519,12 @@ def render_video(
 
     codec, codec_reason = _resolve_video_codec(settings)
     has_cuda_filters = _supports_filter("scale_cuda") and _supports_filter("hwupload_cuda")
-    use_cuda_filters = codec == settings.video_codec_hw and has_cuda_filters
-    cuda_reason = "enabled by available ffmpeg filters" if use_cuda_filters else "disabled"
+    use_cuda_filters = False
+    cuda_reason = "disabled"
+    if codec == settings.video_codec_hw and has_cuda_filters:
+        probe_ok, probe_reason = _probe_cuda_runtime(Path(project.image_path))
+        use_cuda_filters = probe_ok
+        cuda_reason = "runtime-probe ok" if probe_ok else f"runtime-probe failed: {probe_reason}"
 
     logger.info("Выбран видеокодек: %s (%s)", codec, codec_reason)
     logger.info("CUDA filtergraph: %s (%s)", "enabled" if use_cuda_filters else "disabled", cuda_reason)
@@ -600,10 +610,10 @@ def render_video(
             lyrics_pos=(lx1, ly1),
             progress_callback=progress_callback,
         )
-    except RuntimeError as exc:
+    except RenderError as exc:
         err = str(exc)
         if use_cuda_filters and _is_cuda_runtime_failure(err):
-            logger.warning("CUDA фильтры недоступны на рантайме, fallback на CPU filtergraph")
+            logger.warning("CUDA runtime-сбой, выполняется fallback на CPU filtergraph: %s", err[-400:])
             fallback_filter = _build_filter_complex(project, layout, use_cuda=False)
             fallback_cmd = cmd.copy()
             fc_idx = fallback_cmd.index("-filter_complex")

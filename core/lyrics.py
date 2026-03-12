@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 from bisect import bisect_right
+import re
 
 from models import LyricLine
 
 
 def parse_mmss(value: str) -> float:
-    parts = value.strip().split(":")
-    if len(parts) != 2:
+    raw_value = value.strip()
+    if not re.fullmatch(r"\d{2}:\d{2}", raw_value):
         raise ValueError("Время должно быть в формате мм:сс")
-    mm, ss = parts
-    if not (mm.isdigit() and ss.isdigit()):
-        raise ValueError("Время должно содержать только цифры")
+    mm, ss = raw_value.split(":")
     seconds = int(mm) * 60 + int(ss)
     if int(ss) >= 60:
         raise ValueError("Секунды должны быть меньше 60")

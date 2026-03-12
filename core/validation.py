@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from core.audio import probe_audio_duration
+from core.audio import AudioError, probe_audio_duration
 from core.lyrics import parse_mmss, sort_lyrics
 from models import ProjectData
 
@@ -11,6 +11,10 @@ logger = logging.getLogger(__name__)
 
 
 class ValidationError(ValueError):
+    pass
+
+
+class DependencyError(RuntimeError):
     pass
 
 
@@ -30,14 +34,24 @@ def validate_project(data: ProjectData) -> float:
     if not data.lyrics:
         raise ValidationError("Добавьте хотя бы одну строку текста.")
 
-    duration = probe_audio_duration(Path(data.audio_path))
-    sorted_lines = sort_lyrics(data.lyrics)
+    try:
+        duration = probe_audio_duration(Path(data.audio_path))
+    except AudioError as exc:
+        raise DependencyError(str(exc)) from exc
+
+    try:
+        sorted_lines = sort_lyrics(data.lyrics)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
     logger.info("Проверка %d строк текста", len(sorted_lines))
 
     for line in sorted_lines:
         if not line.text.strip():
             raise ValidationError("Текст строки не может быть пустым.")
-        start = parse_mmss(line.start_time)
+        try:
+            start = parse_mmss(line.start_time)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         if start > duration:
             raise ValidationError(f"Строка '{line.text[:24]}' начинается позже конца трека.")
 
