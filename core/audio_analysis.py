@@ -22,6 +22,18 @@ class BeatAnalysisResult:
 _last_beat_cache: dict[tuple[str, int], BeatAnalysisResult] = {}
 
 
+def _to_scalar_bpm(tempo_value) -> float:
+    if isinstance(tempo_value, np.ndarray):
+        if tempo_value.size == 0:
+            return 0.0
+        return float(np.ravel(tempo_value)[0])
+    if isinstance(tempo_value, (list, tuple)):
+        if not tempo_value:
+            return 0.0
+        return float(tempo_value[0])
+    return float(tempo_value)
+
+
 def analyze_bpm_and_beats(audio_path: str, fps: int) -> BeatAnalysisResult:
     cache_key = (audio_path, fps)
     if cache_key in _last_beat_cache:
@@ -41,7 +53,8 @@ def analyze_bpm_and_beats(audio_path: str, fps: int) -> BeatAnalysisResult:
     except Exception as exc:  # noqa: BLE001
         raise AudioAnalysisError(f"Ошибка BPM-анализа: {exc}") from exc
 
-    bpm = float(tempo) if np.isfinite(tempo) else 0.0
+    bpm_candidate = _to_scalar_bpm(tempo)
+    bpm = bpm_candidate if np.isfinite(bpm_candidate) else 0.0
     confidence_low = False
 
     if not beat_times:
