@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 class RenderError(RuntimeError):
     pass
 
+
+class RenderDependencyError(RenderError):
+    pass
+
 FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
 LYRICS_FONT_REGULAR_FILE = "NotoSerif-Regular.ttf"
 LYRICS_FONT_BOLD_FILE = "NotoSerif-Bold.ttf"
@@ -53,7 +57,7 @@ def _load_font(size: int, filename: str) -> ImageFont.FreeTypeFont | ImageFont.I
 def _ensure_ffmpeg_available() -> None:
     logger.info("Проверка доступности ffmpeg")
     if shutil.which("ffmpeg") is None:
-        raise RenderError(
+        raise RenderDependencyError(
             "Не найден ffmpeg в PATH. Установите FFmpeg и добавьте ffmpeg в PATH перед генерацией видео."
         )
 

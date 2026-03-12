@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.image_analysis import extract_dominant_palette
-from core.render import RenderError, render_video
+from core.render import RenderDependencyError, RenderError, render_video
 from core.validation import DependencyError, ValidationError, validate_project
 from models import LyricLine, ProjectData, RenderSettings
 
@@ -100,6 +100,9 @@ class RenderWorker(QThread):
             self.failed.emit(str(exc), "validation")
         except DependencyError as exc:
             logger.exception("Worker: ошибка зависимостей")
+            self.failed.emit(str(exc), "dependencies")
+        except RenderDependencyError as exc:
+            logger.exception("Worker: ошибка зависимостей рендера")
             self.failed.emit(str(exc), "dependencies")
         except RenderError as exc:
             logger.exception("Worker: runtime-ошибка рендера")
