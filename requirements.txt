@@ -4,3 +4,4 @@ numpy>=1.26
 scikit-learn>=1.4
 librosa>=0.10
 soundfile>=0.12
+openai-whisper>=20240930
