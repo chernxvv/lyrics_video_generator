@@ -2,3 +2,5 @@ PySide6>=6.7
 Pillow>=10.0
 numpy>=1.26
 scikit-learn>=1.4
+librosa>=0.10
+soundfile>=0.12

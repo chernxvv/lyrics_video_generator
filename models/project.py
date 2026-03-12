@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
+
+VideoOrientation = Literal["vertical", "horizontal"]
+SyncMode = Literal["manual", "auto"]
+BackgroundMode = Literal["soft_gradient", "bpm_dynamic"]
+RenderMode = Literal["Preview", "Final"]
 
 
 @dataclass(slots=True)
@@ -22,10 +28,20 @@ class PaletteInfo:
 
 
 @dataclass(slots=True)
+class RenderProfile:
+    orientation: VideoOrientation
+    mode: RenderMode
+    width: int
+    height: int
+    fps: int
+
+
+@dataclass(slots=True)
 class RenderSettings:
     width: int = 1080
     height: int = 1920
     fps: int = 30
+    orientation: VideoOrientation = "vertical"
     prefer_hw_encode: bool = True
     video_codec_hw: str = "h264_nvenc"
     video_codec_sw: str = "libx264"
@@ -39,12 +55,21 @@ class RenderSettings:
     pixel_format: str = "yuv420p"
 
     @classmethod
-    def preview(cls) -> "RenderSettings":
-        return cls(width=540, height=960, fps=24)
+    def from_profile(cls, profile: RenderProfile) -> "RenderSettings":
+        return cls(
+            width=profile.width,
+            height=profile.height,
+            fps=profile.fps,
+            orientation=profile.orientation,
+        )
 
-    @classmethod
-    def final(cls) -> "RenderSettings":
-        return cls(width=1080, height=1920, fps=30)
+
+RENDER_PROFILES: dict[tuple[VideoOrientation, RenderMode], RenderProfile] = {
+    ("vertical", "Preview"): RenderProfile("vertical", "Preview", 540, 960, 24),
+    ("vertical", "Final"): RenderProfile("vertical", "Final", 1080, 1920, 30),
+    ("horizontal", "Preview"): RenderProfile("horizontal", "Preview", 960, 540, 24),
+    ("horizontal", "Final"): RenderProfile("horizontal", "Final", 1920, 1080, 30),
+}
 
 
 @dataclass(slots=True)
@@ -55,3 +80,8 @@ class ProjectData:
     title: str = ""
     release_date: str = ""
     lyrics: list[LyricLine] = field(default_factory=list)
+    orientation: VideoOrientation = "vertical"
+    sync_mode: SyncMode = "manual"
+    auto_sync_lyrics_text: str = ""
+    lyrics_autofilled: bool = False
+    background_mode: BackgroundMode = "soft_gradient"
