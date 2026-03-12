@@ -77,16 +77,27 @@ ffmpeg -hide_banner -encoders | rg h264_nvenc
 
 ### Filtergraph и CUDA-preprocess
 
-Часть операций перенесена из Python в `ffmpeg filter_complex`:
-- масштабирование и наложение обложки;
-- статичный текст (artist/title/date) через `drawtext`.
+В `filter_complex` есть две разные ветки подготовки обложки:
+- **CPU-ветка:** `scale + crop`.
+- **CUDA-ветка:** `format=nv12 -> hwupload_cuda -> scale_cuda -> hwdownload -> format=nv12 -> crop`.
 
-Если доступен NVENC и фильтры `scale_cuda`/`hwupload_cuda`, рендер сразу запускает CUDA-preprocess в боевом filtergraph.
-Если реальный запуск ffmpeg возвращает ошибку CUDA (в т.ч. `-22 Invalid argument`), выполняется fallback на CPU filtergraph с логом первичной причины.
-Для совместимости с ffmpeg-сборками (включая gyan) CUDA-цепочка использует `nv12` на этапе `hwdownload`, что устраняет типичную ошибку `Invalid output format rgba for hwframe download`.
+Как выбирается ветка:
+1. Проверяется доступность NVENC и CUDA-фильтров (`scale_cuda`, `hwupload_cuda`).
+2. Выполняется короткий runtime-probe CUDA на реальном ffmpeg.
+3. В логах явно фиксируется выбор (`CUDA filtergraph: enabled/disabled`) и сама ветка (`CPU` или `CUDA`).
 
+Если CUDA-ветка падает во время рендера (runtime-сбой драйвера/устройства/ffmpeg), рендер автоматически перезапускается с CPU-веткой. Причина отката логируется.
 
-Важно: NVENC/CUDA в текущей архитектуре ускоряют кодирование и часть filtergraph, но генерация динамического фона и lyric-оверлея остаётся CPU-bound в Python/Pillow. Поэтому «полный рендер на CUDA» здесь недостижим без переноса логики генерации кадров в ffmpeg/OpenGL/CUDA-шейдеры.
+### Что гарантированно ускоряется, а что остаётся CPU-bound
+
+**Гарантированно ускоряется (при доступных NVENC/CUDA):**
+- Кодирование видео через `h264_nvenc`.
+- Масштабирование обложки в CUDA-ветке `filter_complex`.
+
+**Остаётся CPU-bound в текущей архитектуре:**
+- Генерация анимированного фона.
+- Подготовка lyric-overlay в Pillow.
+- Компоновка кадров в Python перед отправкой в ffmpeg pipe.
 
 ## Что влияет на скорость рендера
 

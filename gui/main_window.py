@@ -27,8 +27,8 @@ from PySide6.QtWidgets import (
 )
 
 from core.image_analysis import extract_dominant_palette
-from core.render import render_video
-from core.validation import validate_project
+from core.render import RenderDependencyError, RenderError, render_video
+from core.validation import DependencyError, ValidationError, validate_project
 from models import LyricLine, ProjectData, RenderSettings
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ class PerformanceSettingsDialog(QDialog):
 class RenderWorker(QThread):
     progress = Signal(int)
     finished_ok = Signal(str)
-    failed = Signal(str)
+    failed = Signal(str, str)
 
     def __init__(self, project: ProjectData, output_path: Path, settings: RenderSettings, mode: str):
         super().__init__()
@@ -95,9 +95,21 @@ class RenderWorker(QThread):
             self.finished_ok.emit(
                 f"{self.output_path}|{self.mode}|{codec}|{self.settings.thread_count}|{self.settings.frame_chunk_size}"
             )
+        except ValidationError as exc:
+            logger.exception("Worker: ошибка валидации")
+            self.failed.emit(str(exc), "validation")
+        except DependencyError as exc:
+            logger.exception("Worker: ошибка зависимостей")
+            self.failed.emit(str(exc), "dependencies")
+        except RenderDependencyError as exc:
+            logger.exception("Worker: ошибка зависимостей рендера")
+            self.failed.emit(str(exc), "dependencies")
+        except RenderError as exc:
+            logger.exception("Worker: runtime-ошибка рендера")
+            self.failed.emit(str(exc), "runtime")
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Worker: ошибка генерации")
-            self.failed.emit(str(exc))
+            logger.exception("Worker: неизвестная ошибка генерации")
+            self.failed.emit(str(exc), "runtime")
 
 
 class MainWindow(QMainWindow):
@@ -297,14 +309,14 @@ class MainWindow(QMainWindow):
             f"Видео сохранено:\n{output}\n\nРежим: {mode}\nКодек: {codec}\nПотоки: {threads}\nЧанк: {chunk}",
         )
 
-    def _on_fail(self, error: str):
-        logger.error("Генерация завершена с ошибкой: %s", error)
+    def _on_fail(self, error: str, error_type: str):
+        logger.error("Генерация завершена с ошибкой [%s]: %s", error_type, error)
         self.status_label.setText("Ошибка рендера")
         self.generate_button.setEnabled(True)
-        if "Укажите" in error or "Выберите" in error or "Добавьте" in error or "Строка" in error:
+        if error_type == "validation":
             QMessageBox.warning(self, "Ошибка валидации", error)
             return
-        if "ffmpeg" in error.lower() or "ffprobe" in error.lower() or "PATH" in error:
-            QMessageBox.warning(self, "Не найдены ffmpeg/ffprobe", error)
+        if error_type == "dependencies":
+            QMessageBox.warning(self, "Ошибка зависимостей", error)
             return
-        QMessageBox.critical(self, "Ошибка", error)
+        QMessageBox.critical(self, "Ошибка рендера", error)
