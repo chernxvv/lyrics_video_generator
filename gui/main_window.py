@@ -308,9 +308,27 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Выберите текст", "", "Text (*.txt *.lrc)")
         if not path:
             return
-        text = Path(path).read_text(encoding="utf-8")
-        self.auto_text.setPlainText(text)
-        logger.info("Загружен текст для авто-синхронизации: %s", path)
+        text_path = Path(path)
+        encodings = ("utf-8", "utf-8-sig", "cp1251")
+        for encoding in encodings:
+            try:
+                text = text_path.read_text(encoding=encoding)
+                self.auto_text.setPlainText(text)
+                logger.info("Загружен текст для авто-синхронизации: %s (encoding=%s)", path, encoding)
+                return
+            except UnicodeDecodeError:
+                logger.warning("Не удалось декодировать файл %s с encoding=%s", path, encoding)
+            except OSError as exc:
+                logger.warning("Не удалось прочитать файл %s: %s", path, exc)
+                QMessageBox.warning(self, "Автосинхронизация", f"Не удалось прочитать файл:\n{exc}")
+                return
+
+        logger.warning("Файл %s не удалось декодировать поддерживаемыми кодировками", path)
+        QMessageBox.warning(
+            self,
+            "Автосинхронизация",
+            "Не удалось прочитать текстовый файл. Проверьте кодировку (поддерживаются UTF-8/UTF-8 BOM/CP1251).",
+        )
 
     def _fill_lyrics_table(self, lines: list[LyricLine]):
         self.table.setRowCount(0)
