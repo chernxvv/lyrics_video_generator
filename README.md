@@ -28,7 +28,7 @@ Desktop GUI-приложение (PySide6) для генерации lyric-video
 - `core/layout.py` — адаптивная геометрия композиции кадра (`vertical`/`horizontal`).
 - `core/lyrics.py` — парсинг/сортировка таймингов, активная строка.
 - `core/auto_sync.py` — baseline авто-синхронизация lyrics.
-- `core/audio_analysis.py` — BPM/beat-анализ.
+- `core/audio_analysis.py` — BPM/beat-анализ (c Demucs stem separation + fallback).
 - `core/background.py` — стратегии фона (`soft_gradient`, `bpm_dynamic`).
 - `core/validation.py` — валидация проекта.
 - `core/render.py` — streaming-рендер и muxing через `ffmpeg`.
@@ -149,6 +149,12 @@ ffmpeg -hide_banner -encoders | rg h264_nvenc
 При первом запуске WhisperX может потребоваться загрузка моделей/компонентов, поэтому первый анализ может быть заметно дольше.
 Если backend недоступен в окружении, приложение автоматически переключается на librosa fallback.
 
+### Примечание по Demucs
+
+Для более точного BPM-реактивного фона анализ пытается использовать Demucs (stem separation).
+Если Demucs недоступен, автоматически применяется fallback на HPSS-подход в librosa.
+Первый запуск Demucs также может быть медленнее из-за загрузки модели.
+
 ## Режимы фона
 
 - **Мягкий градиент** — классический плавный анимированный фон по палитре обложки.
@@ -168,6 +174,7 @@ ffmpeg -hide_banner -encoders | rg h264_nvenc
 
 - Beat detection выполняется один раз перед рендером.
 - Для модуляции эффекта используются не только beat-события, но и локальный темп/перкуссионная энергия (если доступны из анализа).
+- При наличии Demucs BPM-анализ сначала выделяет стемы (drums/other) для более осмысленной ритмической основы, затем считает beat timeline.
 - При слабом результате анализатора применяется fallback-поведение (в логах есть предупреждения).
 - Эффект сделан мягким и атмосферным (без агрессивного строба), но сложность сцены всё равно может замедлить рендер.
 
@@ -217,3 +224,4 @@ python -m compileall .
 - `librosa`
 - `soundfile`
 - `whisperx`
+- `demucs`

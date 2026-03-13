@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -47,6 +51,80 @@ def _normalize_series(values: np.ndarray) -> np.ndarray:
     return ((values - lo) / (hi - lo)).astype(np.float32)
 
 
+def _align_length(source: np.ndarray, target_len: int) -> np.ndarray:
+    if len(source) == target_len:
+        return source
+    if len(source) > target_len:
+        return source[:target_len]
+    pad = np.zeros(target_len - len(source), dtype=source.dtype)
+    return np.concatenate([source, pad])
+
+
+def _run_demucs_and_load_drums(audio_path: str):
+    try:
+        import librosa
+    except ImportError as exc:
+        raise AudioAnalysisError("Для BPM-анализа нужен librosa") from exc
+
+    if shutil.which("demucs") is None:
+        raise AudioAnalysisError("Demucs CLI не найден в PATH")
+
+    logger.info("Beat-analysis: запуск Demucs stem separation")
+    with tempfile.TemporaryDirectory(prefix="lvg_demucs_") as tmpdir:
+        cmd = [
+            "demucs",
+            "-n",
+            "htdemucs",
+            "--device",
+            "cpu",
+            "-o",
+            tmpdir,
+            audio_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise AudioAnalysisError(f"Demucs завершился с ошибкой: {result.stderr.strip()[:400]}")
+
+        stem_root = Path(tmpdir) / "htdemucs"
+        subdirs = [p for p in stem_root.glob("*") if p.is_dir()]
+        if not subdirs:
+            raise AudioAnalysisError("Demucs не вернул директорию стемов")
+
+        stem_dir = subdirs[0]
+        drums_path = stem_dir / "drums.wav"
+        other_path = stem_dir / "other.wav"
+        if not drums_path.exists():
+            raise AudioAnalysisError("Demucs не вернул drums stem")
+
+        y_drums, sr = librosa.load(str(drums_path), sr=None, mono=True)
+        y_percussive = y_drums.astype(np.float32)
+
+        if other_path.exists():
+            y_other, sr_other = librosa.load(str(other_path), sr=sr, mono=True)
+            if sr_other == sr:
+                y_other = _align_length(y_other.astype(np.float32), len(y_percussive))
+                y_percussive = y_percussive + 0.12 * y_other
+
+        y_mix, sr_mix = librosa.load(audio_path, sr=sr, mono=True)
+        if sr_mix != sr:
+            raise AudioAnalysisError("Demucs/librosa mismatch по sample rate")
+        y_mix = _align_length(y_mix.astype(np.float32), len(y_percussive))
+
+        logger.info("Beat-analysis: Demucs stems успешно загружены")
+        return y_mix, y_percussive, sr
+
+
+def _load_percussive_fallback(audio_path: str):
+    try:
+        import librosa
+    except ImportError as exc:
+        raise AudioAnalysisError("Для BPM-анализа нужен librosa. Установите зависимости из requirements.txt") from exc
+
+    y, sr = librosa.load(audio_path, sr=None, mono=True)
+    _, y_percussive = librosa.effects.hpss(y)
+    return y.astype(np.float32), y_percussive.astype(np.float32), sr
+
+
 def analyze_bpm_and_beats(audio_path: str, fps: int) -> BeatAnalysisResult:
     cache_key = (audio_path, fps)
     if cache_key in _last_beat_cache:
@@ -59,16 +137,20 @@ def analyze_bpm_and_beats(audio_path: str, fps: int) -> BeatAnalysisResult:
     except ImportError as exc:
         raise AudioAnalysisError("Для BPM-анализа нужен librosa. Установите зависимости из requirements.txt") from exc
 
+    used_demucs = False
     try:
-        y, sr = librosa.load(audio_path, sr=None, mono=True)
-        _, y_percussive = librosa.effects.hpss(y)
+        y_mix, y_percussive, sr = _run_demucs_and_load_drums(audio_path)
+        used_demucs = True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Beat-analysis: Demucs недоступен/ошибка (%s), fallback на HPSS", exc)
+        y_mix, y_percussive, sr = _load_percussive_fallback(audio_path)
 
+    try:
         tempo, beats = librosa.beat.beat_track(y=y_percussive, sr=sr)
         beat_times = librosa.frames_to_time(beats, sr=sr).tolist()
 
         onset_env = librosa.onset.onset_strength(y=y_percussive, sr=sr)
         rms = librosa.feature.rms(y=y_percussive, frame_length=2048, hop_length=512).flatten()
-
         tempo_f = librosa.feature.tempo(onset_envelope=onset_env, sr=sr, aggregate=None)
     except Exception as exc:  # noqa: BLE001
         raise AudioAnalysisError(f"Ошибка BPM-анализа: {exc}") from exc
@@ -83,7 +165,7 @@ def analyze_bpm_and_beats(audio_path: str, fps: int) -> BeatAnalysisResult:
         if bpm <= 0:
             bpm = 90.0
         step = 60.0 / bpm
-        duration = len(y) / sr
+        duration = len(y_mix) / sr
         beat_times = np.arange(0, duration, max(step, 0.25)).tolist()
         beats = librosa.time_to_frames(np.array(beat_times), sr=sr)
 
@@ -95,7 +177,7 @@ def analyze_bpm_and_beats(audio_path: str, fps: int) -> BeatAnalysisResult:
         local_tempo = []
     else:
         onset_idx = np.clip(beat_frames, 0, max(0, len(onset_env) - 1))
-        rms_idx = np.clip((beat_frames * (512 / 512)).astype(np.int64), 0, max(0, len(rms) - 1))
+        rms_idx = np.clip(beat_frames, 0, max(0, len(rms) - 1))
 
         beat_strengths_arr = _normalize_series(onset_env[onset_idx])
         percussion_arr = _normalize_series(rms[rms_idx])
@@ -125,11 +207,12 @@ def analyze_bpm_and_beats(audio_path: str, fps: int) -> BeatAnalysisResult:
     )
     _last_beat_cache[cache_key] = result
     logger.info(
-        "Beat-analysis: bpm=%.2f, beats=%d, strengths=%d, perc=%d, local_tempo=%d",
+        "Beat-analysis: bpm=%.2f, beats=%d, strengths=%d, perc=%d, local_tempo=%d, source=%s",
         result.bpm,
         len(result.beats),
         len(result.beat_strengths),
         len(result.percussion_energy),
         len(result.local_tempo),
+        "demucs" if used_demucs else "hpss-fallback",
     )
     return result
