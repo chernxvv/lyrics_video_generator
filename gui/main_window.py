@@ -192,6 +192,7 @@ class MainWindow(QMainWindow):
         auto_layout = QVBoxLayout(auto_widget)
         self.auto_text = QPlainTextEdit()
         self.auto_text.setPlaceholderText("Вставьте полный текст трека (по одной строке на строку)")
+        self.auto_text.textChanged.connect(self._on_auto_text_changed)
         self.auto_file_btn = QPushButton("Загрузить текст из файла")
         self.auto_sync_btn = QPushButton("Синхронизировать автоматически")
         self.auto_file_btn.clicked.connect(self.load_auto_text_file)
@@ -304,6 +305,15 @@ class MainWindow(QMainWindow):
             self.table.removeRow(row)
             logger.info("Удалена строка текста: row=%d", row)
 
+    def _reset_auto_sync_state(self):
+        if self.project.lyrics_autofilled:
+            logger.info("Сброс флага авто-синхронизации из-за изменения входных данных")
+        self.project.lyrics_autofilled = False
+        self.project.auto_sync_audio_path = ""
+
+    def _on_auto_text_changed(self):
+        self._reset_auto_sync_state()
+
     def load_auto_text_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выберите текст", "", "Text (*.txt *.lrc)")
         if not path:
@@ -351,6 +361,7 @@ class MainWindow(QMainWindow):
         self.auto_sync_btn.setEnabled(False)
         self.status_label.setText("Автосинхронизация: выполняется анализ...")
         logger.info("Запуск авто-синхронизации")
+        self.project.auto_sync_audio_path = str(self.project.audio_path)
         self._auto_sync_worker = AutoSyncWorker(Path(self.project.audio_path), full_text)
         self._auto_sync_worker.done.connect(self._on_auto_sync_done)
         self._auto_sync_worker.failed.connect(self._on_auto_sync_failed)
@@ -364,6 +375,7 @@ class MainWindow(QMainWindow):
 
         self._fill_lyrics_table(lines)
         self.project.lyrics_autofilled = True
+        self.project.auto_sync_audio_path = str(self.project.audio_path) if self.project.audio_path else ""
         self.status_label.setText(f"Автосинхронизация завершена: строк={len(lines)}")
         logger.info("Автосинхронизация успешна, таблица заполнена: lines=%d", len(lines))
 
@@ -378,6 +390,7 @@ class MainWindow(QMainWindow):
         if path:
             self.project.audio_path = Path(path)
             self.audio_label.setText(Path(path).name)
+            self._reset_auto_sync_state()
             logger.info("Выбран аудиофайл: %s", path)
 
     def pick_image(self):

@@ -31,7 +31,8 @@ def validate_project(data: ProjectData) -> float:
         raise ValidationError("Укажите название трека.")
     if not data.release_date.strip():
         raise ValidationError("Укажите дату релиза.")
-    if data.sync_mode == "auto" and not data.auto_sync_lyrics_text.strip() and not data.lyrics_autofilled:
+    auto_sync_ready = data.lyrics_autofilled and bool(data.audio_path) and data.auto_sync_audio_path == str(data.audio_path)
+    if data.sync_mode == "auto" and not data.auto_sync_lyrics_text.strip() and not auto_sync_ready:
         raise ValidationError("В режиме автосинхронизации нужно вставить полный текст трека.")
     if not data.lyrics:
         raise ValidationError("Добавьте хотя бы одну строку текста.")

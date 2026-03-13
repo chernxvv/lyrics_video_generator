@@ -84,4 +84,5 @@ class ProjectData:
     sync_mode: SyncMode = "manual"
     auto_sync_lyrics_text: str = ""
     lyrics_autofilled: bool = False
+    auto_sync_audio_path: str = ""
     background_mode: BackgroundMode = "soft_gradient"
