@@ -146,6 +146,7 @@ class MainWindow(QMainWindow):
         self.project = ProjectData()
         self._worker: RenderWorker | None = None
         self._auto_sync_worker: AutoSyncWorker | None = None
+        self._auto_sync_input_audio_path: str = ""
         self.thread_count = 2
         self.chunk_size = 60
         self._build_ui()
@@ -361,14 +362,24 @@ class MainWindow(QMainWindow):
         self.auto_sync_btn.setEnabled(False)
         self.status_label.setText("Автосинхронизация: выполняется анализ...")
         logger.info("Запуск авто-синхронизации")
-        self.project.auto_sync_audio_path = str(self.project.audio_path)
-        self._auto_sync_worker = AutoSyncWorker(Path(self.project.audio_path), full_text)
+        self._auto_sync_input_audio_path = str(self.project.audio_path)
+        self._auto_sync_worker = AutoSyncWorker(Path(self._auto_sync_input_audio_path), full_text)
         self._auto_sync_worker.done.connect(self._on_auto_sync_done)
         self._auto_sync_worker.failed.connect(self._on_auto_sync_failed)
         self._auto_sync_worker.start()
 
     def _on_auto_sync_done(self, lines: list[LyricLine]):
         self.auto_sync_btn.setEnabled(True)
+        current_audio_path = str(self.project.audio_path) if self.project.audio_path else ""
+        if self._auto_sync_input_audio_path != current_audio_path:
+            self.status_label.setText("Автосинхронизация: результат устарел и был отброшен")
+            logger.warning(
+                "Автосинхронизация отброшена из-за смены аудио: worker_audio=%s, current_audio=%s",
+                self._auto_sync_input_audio_path,
+                current_audio_path,
+            )
+            return
+
         if len(lines) < 2:
             QMessageBox.warning(self, "Автосинхронизация", "Получено слишком мало строк. Попробуйте другой текст/аудио.")
             return
