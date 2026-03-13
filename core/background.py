@@ -49,10 +49,6 @@ def _add_flash_blob(
     frame += blob[..., None] * color.reshape(1, 1, 3) * (intensity * 0.24)
 
 
-def _color_from_index(color_index: int, flash_colors: list[tuple[int, int, int]]) -> np.ndarray:
-    return np.array(flash_colors[color_index % len(flash_colors)], dtype=np.float32)
-
-
 def _smoothed_chaos(events, t: float) -> float:
     if not events:
         return 0.8
@@ -126,7 +122,8 @@ def _bpm_dynamic_frame(
                 cy = anchor_y + sub.uniform(-1.0, 1.0) * jitter
                 sigma = min(width, height) * sub.uniform(0.066, 0.14)
 
-                color = _color_from_index(ev.color_index + n, flash_colors)
+                color_idx = int(sub.integers(0, len(flash_colors)))
+                color = np.array(flash_colors[color_idx], dtype=np.float32)
                 local_intensity = intensity * sub.uniform(0.34, 0.58) * (1.0 + 0.22 * vocal_mod)
                 _add_flash_blob(frame, x, y, cx=cx, cy=cy, sigma=sigma, color=color, intensity=local_intensity)
 
