@@ -8,7 +8,7 @@ import numpy as np
 
 from pathlib import Path
 
-from core.audio import probe_audio_duration
+from core.audio import AudioError, probe_audio_duration
 from models import LyricLine
 
 logger = logging.getLogger(__name__)
@@ -80,7 +80,10 @@ def _auto_sync_whisperx_forced(audio_path: str, lines: list[str]) -> list[LyricL
     except ImportError as exc:
         raise AutoSyncError("backend whisperx недоступен") from exc
 
-    duration = probe_audio_duration(Path(audio_path))
+    try:
+        duration = probe_audio_duration(Path(audio_path))
+    except AudioError as exc:
+        raise AutoSyncError(f"Не удалось подготовить forced alignment: {exc}") from exc
     if duration <= 0:
         raise AutoSyncError("Не удалось определить длительность аудио для forced alignment")
 
