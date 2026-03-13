@@ -45,22 +45,21 @@ def _add_flash_blob(
     intensity: float,
 ) -> None:
     blob = np.exp(-(((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * sigma**2))).astype(np.float32)
-    frame += (255.0 - frame) * blob[..., None] * (intensity * 0.60)
-    frame += blob[..., None] * color.reshape(1, 1, 3) * (intensity * 0.23)
+    frame += (255.0 - frame) * blob[..., None] * (intensity * 0.58)
+    frame += blob[..., None] * color.reshape(1, 1, 3) * (intensity * 0.24)
 
 
-def _safe_pick(values: list[float], idx: int, default: float) -> float:
-    if idx < 0 or idx >= len(values):
-        return default
-    return float(values[idx])
-
-
-def _tempo_change_factor(beat_times: list[float], idx: int) -> float:
-    if idx < 2 or idx >= len(beat_times):
-        return 0.0
-    prev_interval = max(1e-4, beat_times[idx - 1] - beat_times[idx - 2])
-    curr_interval = max(1e-4, beat_times[idx] - beat_times[idx - 1])
-    return (prev_interval - curr_interval) / prev_interval
+def _flash_color_for_source(source_stem: str, flash_colors: list[tuple[int, int, int]], fallback_idx: int) -> np.ndarray:
+    mapping = {
+        "drums": 0,
+        "guitar": 1,
+        "piano": 2,
+        "other": 3,
+        "bass": 4,
+        "vocals": 5,
+    }
+    idx = mapping.get(source_stem, fallback_idx) % len(flash_colors)
+    return np.array(flash_colors[idx], dtype=np.float32)
 
 
 def _bpm_dynamic_frame(
@@ -77,88 +76,85 @@ def _bpm_dynamic_frame(
     frame = np.ones((height, width, 3), dtype=np.float32)
     frame *= base_color.reshape(1, 1, 3)
 
-    if not beat_result or not beat_result.beats:
+    if not beat_result:
         return np.clip(frame, 0, 255).astype(np.uint8)
 
     y, x = np.mgrid[0:height, 0:width]
-    beat_times = beat_result.beats
-    idx = np.searchsorted(beat_times, t) - 1
-    if idx < 0:
-        return np.clip(frame, 0, 255).astype(np.uint8)
 
-    if idx + 1 < len(beat_times):
-        beat_interval = max(0.21, beat_times[idx + 1] - beat_times[idx])
-    elif idx > 0:
-        beat_interval = max(0.21, beat_times[idx] - beat_times[idx - 1])
+    # Приоритет: событийная линия из multi-stem анализа (без скрещивания stem-ов).
+    events = beat_result.events if beat_result.events else []
+    if events:
+        window = 0.55
+        candidates = [ev for ev in events if -0.08 <= (t - ev.time) <= window]
+        # Поддерживаем паузы: если событий нет в окне, оставляем базовый фон.
+        if not candidates:
+            vignette = 0.94 - 0.14 * (((x - width / 2) / width) ** 2 + ((y - height / 2) / height) ** 2)
+            frame *= vignette[..., None]
+            return np.clip(frame, 0, 255).astype(np.uint8)
+
+        for idx, ev in enumerate(candidates[-4:]):
+            delta = t - ev.time
+            if delta < 0:
+                fade = math.exp(delta * 8.0)
+            else:
+                fade = math.exp(-delta * 6.4)
+
+            intensity = np.clip(ev.intensity * fade, 0.0, 1.7)
+            chaos = np.clip(ev.chaos, 0.1, 1.8)
+            vocal_mod = np.clip(ev.vocal_mod, 0.0, 1.0)
+
+            seed_base = int(ev.time * 1000) + idx * 97
+            rng = np.random.default_rng(seed=seed_base)
+            anchor_x = rng.uniform(0.12, 0.88) * width
+            anchor_y = rng.uniform(0.14, 0.86) * height
+            sub_count = 1 + (1 if chaos > 0.8 else 0) + (1 if chaos > 1.25 else 0)
+
+            for n in range(sub_count):
+                sub = np.random.default_rng(seed=seed_base + n * 31)
+                jitter = (0.012 + 0.05 * chaos) * min(width, height)
+                cx = anchor_x + sub.uniform(-1.0, 1.0) * jitter
+                cy = anchor_y + sub.uniform(-1.0, 1.0) * jitter
+                sigma = min(width, height) * sub.uniform(0.068, 0.14)
+
+                color = _flash_color_for_source(ev.source_stem, flash_colors, idx + n)
+                local_intensity = intensity * sub.uniform(0.34, 0.58) * (1.0 + 0.20 * vocal_mod)
+                _add_flash_blob(frame, x, y, cx=cx, cy=cy, sigma=sigma, color=color, intensity=local_intensity)
+
+                # Afterglow на том же месте.
+                post_delta = delta - (0.075 + 0.015 * n)
+                if post_delta >= 0:
+                    post_fade = math.exp(-post_delta * (8.8 + 1.2 * n))
+                    post_intensity = local_intensity * (0.36 - 0.05 * n) * post_fade
+                    if post_intensity > 0.01:
+                        _add_flash_blob(
+                            frame,
+                            x,
+                            y,
+                            cx=cx,
+                            cy=cy,
+                            sigma=sigma * (1.05 + 0.03 * n),
+                            color=color,
+                            intensity=post_intensity,
+                        )
     else:
-        beat_interval = 0.45
+        # Legacy fallback if no events available.
+        beat_times = beat_result.beats
+        if not beat_times:
+            return np.clip(frame, 0, 255).astype(np.uint8)
 
-    phase = (t - beat_times[idx]) / beat_interval
-    phase = max(0.0, min(1.35, phase))
+        idx = np.searchsorted(beat_times, t) - 1
+        if idx < 0:
+            return np.clip(frame, 0, 255).astype(np.uint8)
 
-    peak = math.exp(-((phase - 0.05) ** 2) / 0.013)
-    tail = math.exp(-phase * 2.9)
-    beat_envelope = min(1.1, 0.95 * peak + 0.62 * tail)
-
-    strength = _safe_pick(beat_result.beat_strengths, idx, 0.5)
-    percussion = _safe_pick(beat_result.percussion_energy, idx, 0.5)
-    local_tempo = _safe_pick(beat_result.local_tempo, idx, max(80.0, beat_result.bpm))
-    tempo_change = _tempo_change_factor(beat_times, idx)
-
-    # Чем выше перкуссия/сила бита/локальный темп, тем ярче и хаотичнее поведение.
-    tempo_boost = min(1.25, max(0.8, local_tempo / max(60.0, beat_result.bpm or 120.0)))
-    dynamics = 0.35 + 0.40 * strength + 0.35 * percussion + 0.25 * max(0.0, tempo_change)
-    dynamics *= tempo_boost
-
-    extra_flashes = 1
-    if dynamics > 0.95:
-        extra_flashes = 2
-    if dynamics > 1.20:
-        extra_flashes = 3
-
-    for beat_idx in (idx, idx - 1):
-        if beat_idx < 0 or beat_idx >= len(beat_times):
-            continue
-
-        delta = t - beat_times[beat_idx]
-        if delta < -0.05 or delta > min(0.52, beat_interval * 1.4):
-            continue
-
-        rnd = np.random.default_rng(seed=beat_idx + 7331)
-        anchor_x = rnd.uniform(0.12, 0.88) * width
-        anchor_y = rnd.uniform(0.14, 0.86) * height
-
-        if delta <= 0:
-            flash_fade = math.exp(delta * 9.5)
-        else:
-            flash_fade = math.exp(-delta * (6.0 + 1.8 * percussion))
-
-        for n in range(extra_flashes):
-            sub = np.random.default_rng(seed=beat_idx * 101 + n * 17 + 9)
-            jitter = (0.012 + 0.045 * dynamics) * min(width, height)
-            cx = anchor_x + sub.uniform(-1.0, 1.0) * jitter
-            cy = anchor_y + sub.uniform(-1.0, 1.0) * jitter
-            sigma = min(width, height) * sub.uniform(0.072, 0.145)
-            color = np.array(flash_colors[(beat_idx + n) % len(flash_colors)], dtype=np.float32)
-
-            intensity = sub.uniform(0.34, 0.56) * beat_envelope * flash_fade * (0.85 + 0.45 * dynamics)
-            _add_flash_blob(frame, x, y, cx=cx, cy=cy, sigma=sigma, color=color, intensity=intensity)
-
-            post_delta = delta - (0.07 + 0.015 * n)
-            if post_delta >= 0:
-                post_fade = math.exp(-post_delta * (8.2 + 1.1 * n))
-                post_intensity = intensity * (0.34 - 0.05 * n) * post_fade
-                if post_intensity > 0.01:
-                    _add_flash_blob(
-                        frame,
-                        x,
-                        y,
-                        cx=cx,
-                        cy=cy,
-                        sigma=sigma * (1.05 + 0.03 * n),
-                        color=color,
-                        intensity=post_intensity,
-                    )
+        delta = t - beat_times[idx]
+        if -0.05 <= delta <= 0.40:
+            fade = math.exp(-max(0.0, delta) * 6.0)
+            color = np.array(flash_colors[idx % len(flash_colors)], dtype=np.float32)
+            rng = np.random.default_rng(seed=idx + 7331)
+            cx = rng.uniform(0.15, 0.85) * width
+            cy = rng.uniform(0.18, 0.82) * height
+            sigma = min(width, height) * 0.11
+            _add_flash_blob(frame, x, y, cx=cx, cy=cy, sigma=sigma, color=color, intensity=0.55 * fade)
 
     vignette = 0.93 - 0.14 * (((x - width / 2) / width) ** 2 + ((y - height / 2) / height) ** 2)
     frame *= vignette[..., None]
