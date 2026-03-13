@@ -11,6 +11,7 @@ from typing import Callable
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+from core.audio_analysis import BeatAnalysisResult, analyze_bpm_and_beats
 from core.background import build_background_frame
 from core.layout import compute_layout
 from core.lyrics import active_line_index_precomputed, prepare_timeline
@@ -258,12 +259,23 @@ def _render_chunk(
     lyrics_overlays: dict[int, Image.Image],
     start_times: list[float],
     lyrics_pos: tuple[int, int],
+    background_mode: str,
+    beat_result: BeatAnalysisResult | None,
 ) -> tuple[int, list[bytes]]:
     lx1, ly1 = lyrics_pos
     frames: list[bytes] = []
     for frame_index in range(chunk_start, chunk_end):
         t = frame_index / fps
-        frame = Image.fromarray(build_background_frame(t, width, height, palette)).convert("RGBA")
+        frame = Image.fromarray(
+            build_background_frame(
+                t,
+                width,
+                height,
+                palette,
+                mode=background_mode,
+                beat_result=beat_result,
+            )
+        ).convert("RGBA")
         frame = frame.filter(ImageFilter.GaussianBlur(radius=5))
         current_idx = active_line_index_precomputed(start_times, t)
         frame.alpha_composite(lyrics_overlays[current_idx], (lx1, ly1))
@@ -358,6 +370,8 @@ def _render_stream_to_ffmpeg(
     lyrics_overlays: dict[int, Image.Image],
     start_times: list[float],
     lyrics_pos: tuple[int, int],
+    background_mode: str,
+    beat_result: BeatAnalysisResult | None,
     progress_callback: Callable[[int], None] | None,
 ) -> float:
     logger.info("Старт ffmpeg pipe: %s", " ".join(cmd))
@@ -399,6 +413,8 @@ def _render_stream_to_ffmpeg(
                     lyrics_overlays,
                     start_times,
                     lyrics_pos,
+                    background_mode,
+                    beat_result,
                 )
                 pending[fut] = start_idx
                 logger.debug("Submit chunk %d/%d: frames %d..%d", next_submit + 1, total_chunks, start_idx, end_idx - 1)
@@ -468,6 +484,8 @@ def _render_stream_to_ffmpeg(
                         lyrics_overlays,
                         start_times,
                         lyrics_pos,
+                        background_mode,
+                        beat_result,
                     )
                     pending[fut] = start_idx
                     logger.debug("Submit chunk %d/%d: frames %d..%d", next_submit + 1, total_chunks, start_idx, end_idx - 1)
@@ -516,7 +534,7 @@ def render_video(
         raise RenderError("Ошибка рендера: длительность слишком мала, кадров=0")
 
     lines, start_times = prepare_timeline(project.lyrics)
-    layout = compute_layout(width, height)
+    layout = compute_layout(width, height, project.orientation)
 
     thread_count = max(1, settings.thread_count)
     chunk_size = max(1, settings.frame_chunk_size)
@@ -532,6 +550,18 @@ def render_video(
 
     logger.info("Выбран видеокодек: %s (%s)", codec, codec_reason)
     logger.info("CUDA filtergraph: %s (%s)", "enabled" if use_cuda_filters else "disabled", cuda_reason)
+    logger.info(
+        "Выбраны параметры сцены: orientation=%s, background_mode=%s",
+        project.orientation,
+        project.background_mode,
+    )
+    logger.info(
+        "Ключевые layout-параметры: cover_box=%s, lyrics_box=%s, artist_y=%d, title_y=%d",
+        layout.cover_box,
+        layout.lyrics_box,
+        layout.artist_y,
+        layout.title_y,
+    )
     logger.info(
         "Параметры рендера: %dx%d, fps=%d, длительность=%.2fs, кадров=%d, threads=%d, chunk=%d",
         width,
@@ -598,6 +628,20 @@ def render_video(
 
     total_chunks = len([(i, min(total_frames, i + chunk_size)) for i in range(0, total_frames, chunk_size)])
 
+    beat_result: BeatAnalysisResult | None = None
+    if project.background_mode == "bpm_dynamic":
+        try:
+            beat_result = analyze_bpm_and_beats(str(project.audio_path), fps)
+            logger.info(
+                "BPM background: bpm=%.2f, beats=%d, confidence_low=%s",
+                beat_result.bpm,
+                len(beat_result.beats),
+                beat_result.confidence_low,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("BPM-анализ не удался, fallback на мягкий фон: %s", exc)
+            project.background_mode = "soft_gradient"
+
     try:
         _render_stream_to_ffmpeg(
             cmd=cmd,
@@ -612,6 +656,8 @@ def render_video(
             lyrics_overlays=lyrics_overlays,
             start_times=start_times,
             lyrics_pos=(lx1, ly1),
+            background_mode=project.background_mode,
+            beat_result=beat_result,
             progress_callback=progress_callback,
         )
     except RenderError as exc:
@@ -635,6 +681,8 @@ def render_video(
                 lyrics_overlays=lyrics_overlays,
                 start_times=start_times,
                 lyrics_pos=(lx1, ly1),
+                background_mode=project.background_mode,
+                beat_result=beat_result,
                 progress_callback=progress_callback,
             )
         else:

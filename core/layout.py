@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from models import VideoOrientation
+
 
 @dataclass(slots=True)
 class Layout:
@@ -13,7 +15,7 @@ class Layout:
     date_y: int
 
 
-def compute_layout(width: int, height: int) -> Layout:
+def _layout_vertical(width: int, height: int) -> Layout:
     lyrics_h = int(height * 0.18)
     lyrics_w = int(width * 0.8)
     lyrics_x = (width - lyrics_w) // 2
@@ -32,3 +34,33 @@ def compute_layout(width: int, height: int) -> Layout:
         lyrics_box=(lyrics_x, lyrics_y, lyrics_x + lyrics_w, lyrics_y + lyrics_h),
         date_y=lyrics_y + lyrics_h + int(height * 0.03),
     )
+
+
+def _layout_horizontal(width: int, height: int) -> Layout:
+    safe_x = int(width * 0.06)
+    safe_y = int(height * 0.08)
+
+    cover_h = int(height * 0.46)
+    cover_w = cover_h
+    cover_x = safe_x
+    cover_y = int(height * 0.18)
+
+    right_start = cover_x + cover_w + int(width * 0.045)
+    right_width = width - right_start - safe_x
+    lyrics_h = int(height * 0.38)
+    lyrics_y = height - safe_y - lyrics_h
+
+    return Layout(
+        artist_y=safe_y,
+        dash_y=safe_y + int(height * 0.06),
+        title_y=safe_y + int(height * 0.12),
+        cover_box=(cover_x, cover_y, cover_x + cover_w, cover_y + cover_h),
+        lyrics_box=(right_start, lyrics_y, right_start + right_width, lyrics_y + lyrics_h),
+        date_y=safe_y + int(height * 0.20),
+    )
+
+
+def compute_layout(width: int, height: int, orientation: VideoOrientation) -> Layout:
+    if orientation == "horizontal":
+        return _layout_horizontal(width, height)
+    return _layout_vertical(width, height)
