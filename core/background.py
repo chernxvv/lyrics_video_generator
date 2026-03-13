@@ -53,6 +53,23 @@ def _color_from_index(color_index: int, flash_colors: list[tuple[int, int, int]]
     return np.array(flash_colors[color_index % len(flash_colors)], dtype=np.float32)
 
 
+def _smoothed_chaos(events, t: float) -> float:
+    if not events:
+        return 0.8
+    weighted = 0.0
+    wsum = 0.0
+    for ev in events:
+        dist = abs(t - ev.time)
+        if dist > 0.9:
+            continue
+        w = math.exp(-dist / 0.22)
+        weighted += float(ev.chaos) * w
+        wsum += w
+    if wsum <= 1e-6:
+        return float(events[-1].chaos)
+    return float(weighted / wsum)
+
+
 def _bpm_dynamic_frame(
     t: float,
     width: int,
@@ -90,7 +107,10 @@ def _bpm_dynamic_frame(
 
             confidence = float(np.clip(ev.confidence, 0.0, 1.0))
             intensity = float(np.clip(ev.intensity * fade * (0.78 + 0.30 * confidence), 0.0, 1.9))
-            chaos = float(np.clip(ev.chaos * (0.75 + 0.35 * confidence), 0.08, 2.0))
+            chaos_raw = float(np.clip(ev.chaos * (0.75 + 0.35 * confidence), 0.08, 2.0))
+            # Лёгкое сглаживание скачков хаоса между соседними событиями (без сильного blur-эффекта).
+            chaos_near = _smoothed_chaos(candidates, t)
+            chaos = float(np.clip(0.82 * chaos_raw + 0.18 * chaos_near, 0.08, 2.0))
             vocal_mod = float(np.clip(ev.vocal_mod, 0.0, 1.0))
 
             seed_base = int(ev.time * 1000) + idx * 97 + ev.color_index * 13
@@ -101,7 +121,7 @@ def _bpm_dynamic_frame(
 
             for n in range(sub_count):
                 sub = np.random.default_rng(seed=seed_base + n * 31)
-                jitter = (0.012 + 0.05 * chaos) * min(width, height)
+                jitter = (0.012 + 0.047 * chaos) * min(width, height)
                 cx = anchor_x + sub.uniform(-1.0, 1.0) * jitter
                 cy = anchor_y + sub.uniform(-1.0, 1.0) * jitter
                 sigma = min(width, height) * sub.uniform(0.066, 0.14)
