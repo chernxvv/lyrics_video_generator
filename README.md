@@ -156,6 +156,20 @@ ffmpeg -hide_banner -encoders | rg h264_nvenc
 Если Demucs недоступен, автоматически применяется fallback на HPSS-подход в librosa.
 Первый запуск Demucs также может быть медленнее из-за загрузки модели.
 
+### Debug-экспорт BPM-анализа
+
+Для тюнинга попадания фона в такт можно включить экспорт диагностических данных:
+
+```bash
+LVG_BPM_DEBUG_PREFIX=./debug/bpm_analysis python main.py
+```
+
+Будут сохранены:
+- CSV с временными рядами (`score_*`, `quality_*`, `quality_mask`, `chosen_stem_idx`, `event_intensity`, `macro_intensity`);
+- JSON со списком событий (`BeatEvent`) и их параметрами.
+
+Путь к debug-файлам логируется в консоль.
+
 ## Режимы фона
 
 - **Мягкий градиент** — классический плавный анимированный фон по палитре обложки.
