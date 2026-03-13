@@ -56,7 +56,7 @@ class BeatAnalysisResult:
     vocal_presence: list[float] = field(default_factory=list)
 
 
-_last_beat_cache: dict[tuple[str, int], BeatAnalysisResult] = {}
+_last_beat_cache: dict[str, BeatAnalysisResult] = {}
 
 
 def _to_scalar_bpm(tempo_value) -> float:
@@ -548,7 +548,7 @@ def analyze_beats_multistem(audio_path: str, fps: int, debug_output_prefix: str 
 
 
 def analyze_bpm_and_beats(audio_path: str, fps: int) -> BeatAnalysisResult:
-    cache_key = (audio_path, fps)
+    cache_key = audio_path
     if cache_key in _last_beat_cache:
         logger.info("Beat-analysis: использован runtime cache")
         return _last_beat_cache[cache_key]
