@@ -274,6 +274,9 @@ def _build_event_timeline(
     global_quality_mask = _normalize_series(np.mean(quality_mat, axis=0))
     score_thr = float(np.percentile(winner_scores, 60)) if winner_scores.size else 0.0
     conf_thr = float(np.percentile(global_quality_mask, 42)) if global_quality_mask.size else 0.0
+    abs_min_score = 0.015
+    min_confidence = max(conf_thr, 0.18)
+    effective_thr = max(score_thr, abs_min_score)
 
     cooldown_frames = max(1, int(0.09 * sr / hop_length))
     events: list[BeatEvent] = []
@@ -290,7 +293,9 @@ def _build_event_timeline(
         current = winner_scores[i]
         confidence = float(np.clip(0.55 * winner_quality[i] + 0.45 * global_quality_mask[i], 0.0, 1.0))
 
-        if current < score_thr or confidence < conf_thr:
+        if current <= abs_min_score:
+            continue
+        if current < effective_thr or confidence < min_confidence:
             continue
         if not (current >= winner_scores[i - 1] and current >= winner_scores[i + 1]):
             continue
