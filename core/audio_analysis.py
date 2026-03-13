@@ -77,7 +77,7 @@ def _normalize_series(values: np.ndarray) -> np.ndarray:
     lo = float(np.min(values))
     hi = float(np.max(values))
     if hi - lo < 1e-8:
-        return np.ones_like(values, dtype=np.float32) * 0.5
+        return np.zeros_like(values, dtype=np.float32)
     return ((values - lo) / (hi - lo)).astype(np.float32)
 
 
