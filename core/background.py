@@ -45,8 +45,9 @@ def _add_flash_blob(
     intensity: float,
 ) -> None:
     blob = np.exp(-(((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * sigma**2))).astype(np.float32)
-    frame += (255.0 - frame) * blob[..., None] * (intensity * 0.58)
-    frame += blob[..., None] * color.reshape(1, 1, 3) * (intensity * 0.24)
+    flash_strength = np.clip(blob[..., None] * intensity, 0.0, 0.76)
+    frame += (255.0 - frame) * flash_strength * 0.16
+    frame += flash_strength * color.reshape(1, 1, 3) * 0.56
 
 
 def _smoothed_chaos(events, t: float) -> float:
@@ -93,7 +94,9 @@ def _bpm_dynamic_frame(
             frame *= vignette[..., None]
             return np.clip(frame, 0, 255).astype(np.uint8)
 
-        for idx, ev in enumerate(candidates[-5:]):
+        recent_candidates = candidates[-5:]
+        recent_count = len(recent_candidates)
+        for idx, ev in enumerate(recent_candidates):
             delta = t - ev.time
             decay_sec = max(0.08, ev.decay_ms / 1000.0)
             if delta < 0:
@@ -102,7 +105,10 @@ def _bpm_dynamic_frame(
                 fade = math.exp(-delta / decay_sec)
 
             confidence = float(np.clip(ev.confidence, 0.0, 1.0))
-            intensity = float(np.clip(ev.intensity * fade * (0.78 + 0.30 * confidence), 0.0, 1.9))
+            stack_damping = 1.0 - 0.10 * max(0, recent_count - 1)
+            recency_boost = 1.0 - 0.08 * (recent_count - 1 - idx)
+            stack_scale = float(np.clip(stack_damping * recency_boost, 0.62, 1.0))
+            intensity = float(np.clip(ev.intensity * fade * (0.78 + 0.30 * confidence) * stack_scale, 0.0, 1.9))
             chaos_raw = float(np.clip(ev.chaos * (0.75 + 0.35 * confidence), 0.08, 2.0))
             # Лёгкое сглаживание скачков хаоса между соседними событиями (без сильного blur-эффекта).
             chaos_near = _smoothed_chaos(candidates, t)
