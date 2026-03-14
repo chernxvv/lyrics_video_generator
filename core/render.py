@@ -553,10 +553,12 @@ def render_video(
 
     logger.info("Выбран видеокодек: %s (%s)", codec, codec_reason)
     logger.info("CUDA filtergraph: %s (%s)", "enabled" if use_cuda_filters else "disabled", cuda_reason)
+    effective_background_mode = project.background_mode
+
     logger.info(
         "Выбраны параметры сцены: orientation=%s, background_mode=%s",
         project.orientation,
-        project.background_mode,
+        effective_background_mode,
     )
     logger.info(
         "Ключевые layout-параметры: cover_box=%s, lyrics_box=%s, artist_y=%d, title_y=%d",
@@ -632,7 +634,7 @@ def render_video(
     total_chunks = len([(i, min(total_frames, i + chunk_size)) for i in range(0, total_frames, chunk_size)])
 
     beat_result: BeatAnalysisResult | None = None
-    if project.background_mode == "bpm_dynamic":
+    if effective_background_mode == "bpm_dynamic":
         try:
             beat_result = analyze_bpm_and_beats(str(project.audio_path), fps)
             logger.info(
@@ -643,7 +645,7 @@ def render_video(
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("BPM-анализ не удался, fallback на мягкий фон: %s", exc)
-            project.background_mode = "soft_gradient"
+            effective_background_mode = "soft_gradient"
 
     try:
         _render_stream_to_ffmpeg(
@@ -659,7 +661,7 @@ def render_video(
             lyrics_overlays=lyrics_overlays,
             start_times=start_times,
             lyrics_pos=(lx1, ly1),
-            background_mode=project.background_mode,
+            background_mode=effective_background_mode,
             beat_result=beat_result,
             progress_callback=progress_callback,
         )
@@ -684,7 +686,7 @@ def render_video(
                 lyrics_overlays=lyrics_overlays,
                 start_times=start_times,
                 lyrics_pos=(lx1, ly1),
-                background_mode=project.background_mode,
+                background_mode=effective_background_mode,
                 beat_result=beat_result,
                 progress_callback=progress_callback,
             )
