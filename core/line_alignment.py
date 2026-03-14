@@ -57,16 +57,17 @@ _STOPWORDS_EN = {
 class LineAlignmentConfig:
     pre_roll_ms: int = 120
     min_line_gap_ms: int = 120
-    max_line_jump_ms: int = 12000
+    max_line_jump_ms: int = 8000
     max_anchor_search_words: int = 10
     min_anchor_word_length: int = 3
     prefer_non_stopword_anchor: bool = True
     low_confidence_threshold: float = 0.45
     allow_segment_fallback: bool = True
     max_window_extra_words: int = 8
-    max_candidate_lookahead_words: int = 220
+    max_candidate_lookahead_words: int = 120
     min_local_match_score: float = 0.52
     time_prior_weight: float = 0.35
+    cursor_prior_weight: float = 0.25
     russian_mode: bool = False
 
 
@@ -170,6 +171,9 @@ def _score_candidate(
     expected_time: float | None,
     time_span: float,
     time_prior_weight: float,
+    cursor_index: int,
+    cursor_span_words: int,
+    cursor_prior_weight: float,
 ) -> tuple[float, list[int], int]:
     if not line_tokens:
         return 0.0, [], 0
@@ -201,6 +205,12 @@ def _score_candidate(
             dist = abs(float(first_word_time) - expected_time)
             time_score = max(0.0, 1.0 - (dist / time_span))
             score = (1.0 - time_prior_weight) * score + time_prior_weight * time_score
+
+    # Prior к ближайшему окну после текущего курсора, чтобы не прыгать на дальние повторяющиеся припевы.
+    distance_words = max(0, start_idx - cursor_index)
+    if cursor_span_words > 0:
+        cursor_score = max(0.0, 1.0 - (distance_words / float(cursor_span_words)))
+        score = (1.0 - cursor_prior_weight) * score + cursor_prior_weight * cursor_score
 
     return score, matches, first_rel
 
@@ -298,7 +308,8 @@ def align_lyric_lines(
         best_matches: list[int] = []
         best_start_idx = -1
 
-        local_end = min(len(recognized_words), word_cursor + max(20, cfg.max_candidate_lookahead_words))
+        local_lookahead = max(20, cfg.max_candidate_lookahead_words)
+        local_end = min(len(recognized_words), word_cursor + local_lookahead)
         for ridx in range(word_cursor, local_end):
             score, matches, _ = _score_candidate(
                 tokens,
@@ -308,6 +319,9 @@ def align_lyric_lines(
                 expected_time=expected_time,
                 time_span=timeline_span,
                 time_prior_weight=cfg.time_prior_weight,
+                cursor_index=word_cursor,
+                cursor_span_words=local_lookahead,
+                cursor_prior_weight=cfg.cursor_prior_weight,
             )
             if score > best_score:
                 best_score = score
@@ -316,9 +330,11 @@ def align_lyric_lines(
             if best_score >= 0.94:
                 break
 
-        # Если локальный поиск слабый — расширяем до конца, но уже с time-prior.
+        # Если локальный поиск слабый — расширяем область ограниченно,
+        # а не до конца трека, чтобы не улетать на дальние повторы припева.
         if best_score < cfg.min_local_match_score:
-            for ridx in range(local_end, len(recognized_words)):
+            remote_end = min(len(recognized_words), local_end + local_lookahead)
+            for ridx in range(local_end, remote_end):
                 score, matches, _ = _score_candidate(
                     tokens,
                     recognized_words,
@@ -327,6 +343,9 @@ def align_lyric_lines(
                     expected_time=expected_time,
                     time_span=timeline_span,
                     time_prior_weight=min(0.85, cfg.time_prior_weight + 0.25),
+                    cursor_index=word_cursor,
+                    cursor_span_words=local_lookahead * 2,
+                    cursor_prior_weight=min(0.45, cfg.cursor_prior_weight + 0.10),
                 )
                 if score > best_score:
                     best_score = score
