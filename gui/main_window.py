@@ -411,16 +411,34 @@ class MainWindow(QMainWindow):
             self.image_label.setText(Path(path).name)
             logger.info("Выбрана обложка: %s", path)
 
-    def _collect_project(self):
+    def _collect_project(self) -> bool:
         lyrics: list[LyricLine] = []
         for row in range(self.table.rowCount()):
             t_item = self.table.item(row, 0)
             l_item = self.table.item(row, 1)
-            if t_item and l_item:
-                normalized_text = " ".join(l_item.text().splitlines())
-                l_item.setText(normalized_text)
+
+            time_text = t_item.text().strip() if t_item else ""
+            lyric_text_raw = l_item.text().strip() if l_item else ""
+            lyric_text = " ".join(lyric_text_raw.splitlines()) if lyric_text_raw else ""
+
+            if not time_text and not lyric_text:
+                continue
+
+            if bool(time_text) != bool(lyric_text):
+                QMessageBox.warning(
+                    self,
+                    "Некорректные данные строки",
+                    f"Строка {row + 1}: заполните одновременно время и текст либо оставьте оба поля пустыми.",
+                )
+                return False
+
+            if t_item:
+                t_item.setText(time_text)
+                t_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            if l_item:
+                l_item.setText(lyric_text)
                 l_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                lyrics.append(LyricLine(start_time=t_item.text(), text=normalized_text))
+            lyrics.append(LyricLine(start_time=time_text, text=lyric_text))
 
         self.project.artist = self.artist_input.text()
         self.project.title = self.title_input.text()
@@ -440,6 +458,7 @@ class MainWindow(QMainWindow):
             self.project.sync_mode,
             self.project.background_mode,
         )
+        return True
 
     def _selected_render_settings(self) -> tuple[str, RenderSettings]:
         mode = self.mode_combo.currentText()
@@ -451,7 +470,10 @@ class MainWindow(QMainWindow):
         return mode, settings
 
     def generate(self):
-        self._collect_project()
+        if not self._collect_project():
+            logger.info("Генерация отменена: обнаружены неконсистентные строки в таблице")
+            return
+
         output, _ = QFileDialog.getSaveFileName(self, "Сохранить видео", "lyrics_video.mp4", "Video (*.mp4)")
         if not output:
             logger.info("Генерация отменена: путь сохранения не выбран")
