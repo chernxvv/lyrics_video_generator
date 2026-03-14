@@ -57,12 +57,16 @@ _STOPWORDS_EN = {
 class LineAlignmentConfig:
     pre_roll_ms: int = 120
     min_line_gap_ms: int = 120
+    max_line_jump_ms: int = 12000
     max_anchor_search_words: int = 10
     min_anchor_word_length: int = 3
     prefer_non_stopword_anchor: bool = True
     low_confidence_threshold: float = 0.45
     allow_segment_fallback: bool = True
     max_window_extra_words: int = 8
+    max_candidate_lookahead_words: int = 220
+    min_local_match_score: float = 0.52
+    time_prior_weight: float = 0.35
     russian_mode: bool = False
 
 
@@ -95,12 +99,9 @@ class LineTimingResult:
     details: dict[str, str | float | int] = field(default_factory=dict)
 
 
-
 def normalize_for_matching(text: str, *, russian_mode: bool = False) -> str:
     normalized = unicodedata.normalize("NFKC", text).lower()
-    normalized = (
-        normalized.replace("ё", "е") if russian_mode else normalized
-    )
+    normalized = normalized.replace("ё", "е") if russian_mode else normalized
     replacements = {
         "“": '"',
         "”": '"',
@@ -160,7 +161,16 @@ def build_recognized_words(words: list[dict], *, russian_mode: bool = False) -> 
     return built
 
 
-def _score_candidate(line_tokens: list[str], recognized: list[RecognizedWord], start_idx: int, window_size: int) -> tuple[float, list[int], int]:
+def _score_candidate(
+    line_tokens: list[str],
+    recognized: list[RecognizedWord],
+    start_idx: int,
+    window_size: int,
+    *,
+    expected_time: float | None,
+    time_span: float,
+    time_prior_weight: float,
+) -> tuple[float, list[int], int]:
     if not line_tokens:
         return 0.0, [], 0
     end_idx = min(len(recognized), start_idx + window_size)
@@ -184,6 +194,14 @@ def _score_candidate(line_tokens: list[str], recognized: list[RecognizedWord], s
     first_rel = max(0, matches[0] - start_idx)
     compactness = 1.0 - (first_rel / max(1, window_size))
     score = 0.75 * coverage + 0.25 * compactness
+
+    if expected_time is not None and 0 <= matches[0] < len(recognized):
+        first_word_time = recognized[matches[0]].start
+        if first_word_time is not None and time_span > 0:
+            dist = abs(float(first_word_time) - expected_time)
+            time_score = max(0.0, 1.0 - (dist / time_span))
+            score = (1.0 - time_prior_weight) * score + time_prior_weight * time_score
+
     return score, matches, first_rel
 
 
@@ -198,6 +216,18 @@ def _find_segment_fallback_start(segments: list[SegmentInfo], prev_start: float,
     return None
 
 
+def _estimate_expected_time(
+    line_idx: int,
+    line_count: int,
+    first_word_time: float,
+    last_word_time: float,
+) -> float:
+    if line_count <= 1:
+        return first_word_time
+    frac = line_idx / max(1, line_count - 1)
+    return first_word_time + (last_word_time - first_word_time) * frac
+
+
 def align_lyric_lines(
     lyric_lines: list[str],
     recognized_words: list[RecognizedWord],
@@ -210,20 +240,40 @@ def align_lyric_lines(
 
     pre_roll_s = max(0.0, min(float(cfg.pre_roll_ms), 300.0)) / 1000.0
     min_gap_s = max(0.0, float(cfg.min_line_gap_ms)) / 1000.0
+    max_jump_s = max(min_gap_s * 2.0, float(cfg.max_line_jump_ms) / 1000.0)
     segments = segments or []
 
     logger.info(
-        "Line alignment: lines=%d words=%d pre_roll_ms=%d min_gap_ms=%d",
+        "Line alignment: lines=%d words=%d pre_roll_ms=%d min_gap_ms=%d max_jump_ms=%d",
         len(lyric_lines),
         len(recognized_words),
         cfg.pre_roll_ms,
         cfg.min_line_gap_ms,
+        cfg.max_line_jump_ms,
     )
+
+    if not recognized_words:
+        return [
+            LineTimingResult(
+                text=text,
+                start_time_seconds=(idx * min_gap_s),
+                confidence=0.0,
+                status="fallback_no_words",
+                details={"line_idx": idx},
+            )
+            for idx, text in enumerate(lyric_lines)
+        ]
+
+    valid_times = [w.start for w in recognized_words if w.start is not None]
+    first_word_time = float(valid_times[0]) if valid_times else 0.0
+    last_word_time = float(valid_times[-1]) if valid_times else first_word_time + 60.0
+    timeline_span = max(5.0, last_word_time - first_word_time)
 
     results: list[LineTimingResult] = []
     word_cursor = 0
     fallback_count = 0
     non_first_anchor_count = 0
+    far_jump_corrections = 0
 
     for line_idx, line_text in enumerate(lyric_lines):
         tokens = tokenize_for_matching(line_text, russian_mode=cfg.russian_mode)
@@ -241,20 +291,47 @@ def align_lyric_lines(
             )
             continue
 
+        expected_time = _estimate_expected_time(line_idx, len(lyric_lines), first_word_time, last_word_time)
         max_window = max(len(tokens) + cfg.max_window_extra_words, len(tokens) * 3)
+
         best_score = -1.0
         best_matches: list[int] = []
         best_start_idx = -1
 
-        candidate_limit = len(recognized_words)
-        for ridx in range(word_cursor, candidate_limit):
-            score, matches, _ = _score_candidate(tokens, recognized_words, ridx, max_window)
+        local_end = min(len(recognized_words), word_cursor + max(20, cfg.max_candidate_lookahead_words))
+        for ridx in range(word_cursor, local_end):
+            score, matches, _ = _score_candidate(
+                tokens,
+                recognized_words,
+                ridx,
+                max_window,
+                expected_time=expected_time,
+                time_span=timeline_span,
+                time_prior_weight=cfg.time_prior_weight,
+            )
             if score > best_score:
                 best_score = score
                 best_matches = matches
                 best_start_idx = ridx
             if best_score >= 0.94:
                 break
+
+        # Если локальный поиск слабый — расширяем до конца, но уже с time-prior.
+        if best_score < cfg.min_local_match_score:
+            for ridx in range(local_end, len(recognized_words)):
+                score, matches, _ = _score_candidate(
+                    tokens,
+                    recognized_words,
+                    ridx,
+                    max_window,
+                    expected_time=expected_time,
+                    time_span=timeline_span,
+                    time_prior_weight=min(0.85, cfg.time_prior_weight + 0.25),
+                )
+                if score > best_score:
+                    best_score = score
+                    best_matches = matches
+                    best_start_idx = ridx
 
         anchor_idx = -1
         anchor_word = ""
@@ -302,9 +379,20 @@ def align_lyric_lines(
                 status = "fallback_gap"
 
         adjusted = max(0.0, float(raw_start) - pre_roll_s)
-        if results and adjusted < results[-1].start_time_seconds + min_gap_s:
-            adjusted = results[-1].start_time_seconds + min_gap_s
-            status = f"{status}_gap_adjusted"
+
+        if results:
+            prev = results[-1].start_time_seconds
+            if adjusted - prev > max_jump_s:
+                far_jump_corrections += 1
+                # Далёкий скачок считаем подозрительным и притягиваем к ожидаемой точке,
+                # но не нарушая монотонность и минимум зазора.
+                expected_from_prev = prev + max(min_gap_s, timeline_span / max(6.0, len(lyric_lines) * 0.65))
+                adjusted = max(prev + min_gap_s, min(adjusted, expected_from_prev + max_jump_s * 0.35))
+                status = f"{status}_far_jump_limited"
+
+            if adjusted < prev + min_gap_s:
+                adjusted = prev + min_gap_s
+                status = f"{status}_gap_adjusted"
 
         if anchor_idx >= 0:
             word_cursor = max(word_cursor, anchor_idx + 1)
@@ -323,6 +411,7 @@ def align_lyric_lines(
                 "best_score": best_score,
                 "matches": len(best_matches),
                 "candidate_start_idx": best_start_idx,
+                "expected_time": expected_time,
             },
         )
         logger.debug(
@@ -344,12 +433,13 @@ def align_lyric_lines(
     confident_count = sum(1 for r in results if r.status.startswith("matched") and r.confidence >= cfg.low_confidence_threshold)
     elapsed = time.perf_counter() - started
     logger.info(
-        "Line alignment: done in %.3fs, confident=%d fallback=%d non_first_anchor=%d equal_starts=%d",
+        "Line alignment: done in %.3fs, confident=%d fallback=%d non_first_anchor=%d equal_starts=%d far_jump_limited=%d",
         elapsed,
         confident_count,
         fallback_count,
         non_first_anchor_count,
         nearly_equal_before_fix,
+        far_jump_corrections,
     )
 
     return results
