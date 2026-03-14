@@ -68,6 +68,8 @@ class LineAlignmentConfig:
     min_local_match_score: float = 0.52
     time_prior_weight: float = 0.35
     cursor_prior_weight: float = 0.25
+    min_cursor_advance_confidence: float = 0.58
+    low_info_line_max_tokens: int = 2
     russian_mode: bool = False
 
 
@@ -238,6 +240,23 @@ def _estimate_expected_time(
     return first_word_time + (last_word_time - first_word_time) * frac
 
 
+def _is_low_information_line(tokens: list[str], cfg: LineAlignmentConfig) -> bool:
+    if not tokens:
+        return True
+    unique_tokens = set(tokens)
+    if len(tokens) <= cfg.low_info_line_max_tokens:
+        return True
+    if len(unique_tokens) <= 1:
+        return True
+    short_ratio = sum(1 for tok in tokens if len(tok) <= 2) / max(1, len(tokens))
+    digit_ratio = sum(1 for tok in tokens if tok.isdigit()) / max(1, len(tokens))
+    if short_ratio >= 0.75:
+        return True
+    if digit_ratio >= 0.5:
+        return True
+    return False
+
+
 def align_lyric_lines(
     lyric_lines: list[str],
     recognized_words: list[RecognizedWord],
@@ -301,6 +320,7 @@ def align_lyric_lines(
             )
             continue
 
+        is_low_info_line = _is_low_information_line(tokens, cfg)
         expected_time = _estimate_expected_time(line_idx, len(lyric_lines), first_word_time, last_word_time)
         max_window = max(len(tokens) + cfg.max_window_extra_words, len(tokens) * 3)
 
@@ -379,11 +399,15 @@ def align_lyric_lines(
             fallback_count += 1
             status = "fallback"
             confidence = min(confidence, 0.35)
-            if best_matches:
+            if best_matches and not (is_low_info_line and confidence < cfg.min_local_match_score):
                 candidate = recognized_words[best_matches[0]].start
                 if candidate is not None:
                     raw_start = candidate
                     status = "fallback_partial_word"
+            if raw_start is None and is_low_info_line and results:
+                raw_start = results[-1].start_time_seconds + min_gap_s
+                status = "fallback_low_info_gap"
+
             if raw_start is None and cfg.allow_segment_fallback:
                 seg_start = _find_segment_fallback_start(
                     segments,
@@ -413,7 +437,13 @@ def align_lyric_lines(
                 adjusted = prev + min_gap_s
                 status = f"{status}_gap_adjusted"
 
-        if anchor_idx >= 0:
+        should_advance_cursor = (
+            anchor_idx >= 0
+            and confidence >= cfg.min_cursor_advance_confidence
+            and not status.startswith("fallback")
+            and not is_low_info_line
+        )
+        if should_advance_cursor:
             word_cursor = max(word_cursor, anchor_idx + 1)
 
         result = LineTimingResult(
@@ -431,6 +461,7 @@ def align_lyric_lines(
                 "matches": len(best_matches),
                 "candidate_start_idx": best_start_idx,
                 "expected_time": expected_time,
+                "low_info_line": int(is_low_info_line),
             },
         )
         logger.debug(
