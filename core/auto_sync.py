@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 
 import numpy as np
@@ -9,6 +14,13 @@ import numpy as np
 from pathlib import Path
 
 from core.audio import AudioError, probe_audio_duration
+from core.line_alignment import (
+    LineAlignmentConfig,
+    RecognizedWord,
+    SegmentInfo,
+    align_lyric_lines,
+    build_recognized_words,
+)
 from models import LyricLine
 
 logger = logging.getLogger(__name__)
@@ -24,8 +36,10 @@ def _split_lyrics_text(full_text: str) -> list[str]:
 
 
 def _format_mmss(seconds: float) -> str:
-    safe_seconds = max(0, int(seconds))
-    return f"{safe_seconds // 60:02d}:{safe_seconds % 60:02d}"
+    safe_seconds = max(0.0, seconds)
+    mm = int(safe_seconds // 60)
+    ss = safe_seconds - (mm * 60)
+    return f"{mm:02d}:{ss:05.2f}"
 
 
 def _guess_language_code(lines: list[str]) -> str:
@@ -35,46 +49,80 @@ def _guess_language_code(lines: list[str]) -> str:
     return "en"
 
 
-def _build_text_segments(lines: list[str], duration: float) -> list[dict[str, float | str]]:
-    weights = np.array([max(1.0, len(re.findall(r"\w", line, flags=re.UNICODE))) for line in lines], dtype=np.float32)
-    weights /= weights.sum()
-    total = max(0.5, duration - 0.2)
-    cumulative = (weights.cumsum() * total).tolist()
+def _run_demucs_vocals_stem(audio_path: str) -> str | None:
+    if shutil.which("demucs") is None:
+        logger.info("Автосинхронизация: Demucs CLI не найден, используем full mix")
+        return None
 
-    starts = [0.0] + cumulative[:-1]
-    ends = cumulative
-    segments: list[dict[str, float | str]] = []
-    for i, line in enumerate(lines):
+    src_path = Path(audio_path)
+    if not src_path.exists():
+        return None
+
+    stat = src_path.stat()
+    cache_key = f"{src_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+    cache_hash = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()[:16]
+    cache_dir = Path(tempfile.gettempdir()) / "lvg_demucs_cache" / cache_hash
+    cache_vocals = cache_dir / "vocals.wav"
+
+    if cache_vocals.exists() and cache_vocals.stat().st_size > 0:
+        logger.info("Автосинхронизация: переиспользуем vocals stem из кэша: %s", cache_vocals)
+        return str(cache_vocals)
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    last_err = ""
+    for model_name in ("htdemucs_6s", "htdemucs"):
+        cmd = [
+            "demucs",
+            "-n",
+            model_name,
+            "--device",
+            "cpu",
+            "-o",
+            str(cache_dir),
+            audio_path,
+        ]
+        logger.info("Автосинхронизация: запуск Demucs model=%s", model_name)
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if res.returncode == 0:
+            vocals_candidates = list(cache_dir.glob("**/vocals.wav"))
+            if vocals_candidates:
+                cached = vocals_candidates[0]
+                shutil.copy2(cached, cache_vocals)
+                logger.info("Автосинхронизация: Demucs vocals stem подготовлен: %s", cache_vocals)
+                return str(cache_vocals)
+            last_err = "Demucs завершился без vocals stem"
+            continue
+        last_err = (res.stderr or res.stdout or "")[-800:]
+
+    logger.warning("Автосинхронизация: Demucs недоступен/ошибка, fallback на full mix: %s", last_err)
+    return None
+
+
+def _extract_words_and_segments(aligned_result: dict) -> tuple[list[dict], list[dict]]:
+    words: list[dict] = []
+    segments: list[dict] = []
+    for seg in aligned_result.get("segments") or []:
         segments.append(
             {
-                "id": i,
-                "start": float(starts[i]),
-                "end": float(max(starts[i] + 0.15, ends[i])),
-                "text": line,
+                "start": seg.get("start"),
+                "end": seg.get("end"),
+                "text": seg.get("text") or "",
             }
         )
-    return segments
+        for word in seg.get("words") or []:
+            words.append(
+                {
+                    "word": word.get("word") or word.get("text") or "",
+                    "start": word.get("start"),
+                    "end": word.get("end"),
+                    "score": word.get("score"),
+                }
+            )
+    return words, segments
 
 
-def _extract_lines_from_aligned_segments(aligned_segments: list[dict]) -> list[tuple[float, str]]:
-    result: list[tuple[float, str]] = []
-    for segment in aligned_segments:
-        text = str(segment.get("text") or "").strip()
-        start = segment.get("start")
-
-        if start is None:
-            words = segment.get("words") or []
-            for word in words:
-                if word.get("start") is not None:
-                    start = float(word["start"])
-                    break
-
-        if text and start is not None:
-            result.append((float(start), text))
-    return result
-
-
-def _auto_sync_whisperx_forced(audio_path: str, lines: list[str]) -> list[LyricLine]:
+def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[LyricLine]:
     try:
         import whisperx
     except ImportError as exc:
@@ -83,54 +131,75 @@ def _auto_sync_whisperx_forced(audio_path: str, lines: list[str]) -> list[LyricL
     try:
         duration = probe_audio_duration(Path(audio_path))
     except AudioError as exc:
-        raise AutoSyncError(f"Не удалось подготовить forced alignment: {exc}") from exc
+        raise AutoSyncError(f"Не удалось подготовить alignment: {exc}") from exc
     if duration <= 0:
-        raise AutoSyncError("Не удалось определить длительность аудио для forced alignment")
+        raise AutoSyncError("Не удалось определить длительность аудио для alignment")
 
     language_code = _guess_language_code(lines)
-    logger.info("Автосинхронизация: backend=whisperx forced alignment, lang=%s", language_code)
+    russian_mode = language_code == "ru"
 
-    text_segments = _build_text_segments(lines, duration)
+    source_audio = audio_path
+    source_type = "full_mix"
+    vocals_stem = _run_demucs_vocals_stem(audio_path)
+    if vocals_stem:
+        source_audio = vocals_stem
+        source_type = "vocals_stem"
+
+    logger.info("Автосинхронизация: backend=whisperx word-level, lang=%s, source=%s", language_code, source_type)
 
     device = "cpu"
     compute_type = "int8"
 
     try:
-        audio = whisperx.load_audio(audio_path)
+        audio = whisperx.load_audio(source_audio)
+        model = whisperx.load_model("small", device, compute_type=compute_type, language=language_code)
+        transcription = model.transcribe(audio, batch_size=8)
+
+        segments = transcription.get("segments") or []
+        if not segments:
+            raise AutoSyncError("WhisperX не вернул сегменты транскрипции")
+
         align_model, metadata = whisperx.load_align_model(language_code=language_code, device=device)
         aligned = whisperx.align(
-            text_segments,
+            segments,
             align_model,
             metadata,
             audio,
             device,
             return_char_alignments=False,
         )
+    except AutoSyncError:
+        raise
     except Exception as exc:  # noqa: BLE001
-        raise AutoSyncError(f"Ошибка WhisperX forced alignment: {exc}") from exc
+        raise AutoSyncError(f"Ошибка WhisperX word alignment: {exc}") from exc
 
-    aligned_segments = aligned.get("segments") or []
-    line_starts = _extract_lines_from_aligned_segments(aligned_segments)
+    words_raw, segments_raw = _extract_words_and_segments(aligned)
+    recognized_words: list[RecognizedWord] = build_recognized_words(words_raw, russian_mode=russian_mode)
+    segment_infos = [SegmentInfo(start=s.get("start"), end=s.get("end"), text=str(s.get("text") or "")) for s in segments_raw]
 
-    if len(line_starts) < 2:
-        raise AutoSyncError("WhisperX вернул слишком мало выровненных сегментов")
+    if len(recognized_words) < 2:
+        raise AutoSyncError("WhisperX вернул слишком мало слов с таймингом")
 
-    lyrics: list[LyricLine] = []
-    prev = -1.0
-    for idx, original_line in enumerate(lines):
-        if idx < len(line_starts):
-            start = line_starts[idx][0]
-        else:
-            start = prev + 0.35
-        start = max(prev + 0.2, min(start, max(0.0, duration - 0.2)))
-        lyrics.append(LyricLine(start_time=_format_mmss(start), text=original_line))
-        prev = start
+    cfg = LineAlignmentConfig(russian_mode=russian_mode)
+    line_results = align_lyric_lines(lines, recognized_words, segments=segment_infos, config=cfg)
 
+    lyrics: list[LyricLine] = [
+        LyricLine(start_time=_format_mmss(item.start_time_seconds), text=item.text)
+        for item in line_results
+    ]
+
+    fallback_lines = sum(1 for item in line_results if item.status.startswith("fallback"))
     logger.info(
-        "Автосинхронизация/whisperx: duration=%.2f, aligned_segments=%d, lyric_lines=%d",
-        duration,
-        len(aligned_segments),
+        "Автосинхронизация/whisperx: source=%s words=%d segments=%d lyric_lines=%d fallback_lines=%d",
+        source_type,
+        len(recognized_words),
+        len(segment_infos),
         len(lyrics),
+        fallback_lines,
+    )
+    logger.debug(
+        "Автосинхронизация/whisperx: statuses=%s",
+        json.dumps([item.status for item in line_results], ensure_ascii=False),
     )
     return lyrics
 
@@ -213,8 +282,8 @@ def auto_sync_lyrics(audio_path: str, full_lyrics_text: str) -> list[LyricLine]:
         raise AutoSyncError("Для автосинхронизации нужно минимум 2 непустые строки.")
 
     try:
-        aligned = _auto_sync_whisperx_forced(audio_path, lines)
-        backend = "whisperx_forced"
+        aligned = _auto_sync_whisperx_word_level(audio_path, lines)
+        backend = "whisperx_word_level"
     except AutoSyncError as align_exc:
         logger.warning("Автосинхронизация: whisperx недоступен/ошибка (%s), fallback на librosa", align_exc)
         aligned = _auto_sync_librosa(audio_path, lines)
