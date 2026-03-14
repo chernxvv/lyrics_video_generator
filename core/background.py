@@ -77,6 +77,34 @@ def _bpm_dynamic_frame(
     colors = [c.rgb for c in palette.colors] or [(28, 28, 36), (90, 100, 140), (150, 95, 80)]
     base_color = np.array(colors[0], dtype=np.float32)
     flash_colors = colors[1:] or [tuple(min(255, c + 30) for c in colors[0])]
+    flash_weights = np.array([max(0.0, c.ratio) for c in palette.colors[1:]], dtype=np.float32)
+    if flash_weights.size != len(flash_colors):
+        flash_weights = np.ones(len(flash_colors), dtype=np.float32)
+    if flash_weights.size and float(flash_weights.sum()) > 1e-9:
+        flash_weights = flash_weights / float(flash_weights.sum())
+    elif flash_weights.size:
+        flash_weights = np.ones(len(flash_colors), dtype=np.float32) / float(len(flash_colors))
+
+    def _pick_flash_color_index(sub_rng: np.random.Generator, *, color_index: int) -> int:
+        if not flash_colors:
+            return 0
+        if len(flash_colors) == 1:
+            return 0
+
+        anchor = int(color_index) % len(flash_colors)
+        if len(flash_colors) == 2:
+            neighborhood = [anchor, (anchor + 1) % len(flash_colors)]
+        else:
+            neighborhood = [anchor, (anchor - 1) % len(flash_colors), (anchor + 1) % len(flash_colors)]
+
+        local_weights = np.array([flash_weights[idx] for idx in neighborhood], dtype=np.float32)
+        if float(local_weights.sum()) > 1e-9:
+            local_weights = local_weights / float(local_weights.sum())
+            return int(sub_rng.choice(neighborhood, p=local_weights))
+
+        if flash_weights.size and float(flash_weights.sum()) > 1e-9:
+            return int(sub_rng.choice(np.arange(len(flash_colors)), p=flash_weights))
+        return int(sub_rng.integers(0, len(flash_colors)))
 
     frame = np.ones((height, width, 3), dtype=np.float32)
     frame *= base_color.reshape(1, 1, 3)
@@ -128,7 +156,7 @@ def _bpm_dynamic_frame(
                 cy = anchor_y + sub.uniform(-1.0, 1.0) * jitter
                 sigma = min(width, height) * sub.uniform(0.066, 0.14)
 
-                color_idx = int(sub.integers(0, len(flash_colors)))
+                color_idx = _pick_flash_color_index(sub, color_index=ev.color_index)
                 color = np.array(flash_colors[color_idx], dtype=np.float32)
                 local_intensity = intensity * sub.uniform(0.34, 0.58) * (1.0 + 0.22 * vocal_mod)
                 _add_flash_blob(frame, x, y, cx=cx, cy=cy, sigma=sigma, color=color, intensity=local_intensity)
