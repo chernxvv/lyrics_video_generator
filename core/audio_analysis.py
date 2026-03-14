@@ -3,13 +3,12 @@ from __future__ import annotations
 import csv
 import json
 import logging
-import shutil
-import subprocess
-import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+from core.demucs_cache import DEMUCS_STEM_NAMES, ensure_demucs_stems_cached
 
 logger = logging.getLogger(__name__)
 
@@ -96,52 +95,39 @@ def _run_demucs_6s(audio_path: str) -> tuple[dict[str, np.ndarray], int]:
     except ImportError as exc:
         raise AudioAnalysisError("Для BPM-анализа нужен librosa") from exc
 
-    if shutil.which("demucs") is None:
-        raise AudioAnalysisError("Demucs CLI не найден в PATH")
+    try:
+        cache_result = ensure_demucs_stems_cached(audio_path, preferred_models=("htdemucs_6s", "htdemucs"))
+    except RuntimeError as exc:
+        raise AudioAnalysisError(str(exc)) from exc
 
-    with tempfile.TemporaryDirectory(prefix="lvg_demucs6s_") as tmpdir:
-        model_names = ["htdemucs_6s", "htdemucs"]
-        last_err = ""
-        for model_name in model_names:
-            cmd = ["demucs", "-n", model_name, "--device", "cpu", "-o", tmpdir, audio_path]
-            logger.info("Beat-analysis: запуск Demucs model=%s", model_name)
-            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-            if res.returncode == 0:
-                break
-            last_err = (res.stderr or res.stdout or "")[-600:]
-        else:
-            raise AudioAnalysisError(f"Demucs завершился с ошибкой: {last_err}")
+    loaded: dict[str, np.ndarray] = {}
+    sr_ref: int | None = None
+    for stem in DEMUCS_STEM_NAMES:
+        f = cache_result.stem_paths.get(stem)
+        if f is None:
+            continue
+        y, sr = librosa.load(str(f), sr=None, mono=True)
+        if sr_ref is None:
+            sr_ref = sr
+        elif sr != sr_ref:
+            y, _ = librosa.load(str(f), sr=sr_ref, mono=True)
+        loaded[stem] = y.astype(np.float32)
 
-        stem_dirs = list(Path(tmpdir).glob("**/drums.wav"))
-        if not stem_dirs:
-            raise AudioAnalysisError("Demucs не вернул stems")
+    if "drums" not in loaded:
+        raise AudioAnalysisError("Demucs не вернул обязательный drums stem")
 
-        base_dir = stem_dirs[0].parent
-        stem_names = ["drums", "bass", "guitar", "piano", "other", "vocals"]
+    max_len = max(len(v) for v in loaded.values())
+    for k, v in list(loaded.items()):
+        loaded[k] = _align_length(v, max_len)
 
-        loaded: dict[str, np.ndarray] = {}
-        sr_ref: int | None = None
-        for stem in stem_names:
-            f = base_dir / f"{stem}.wav"
-            if not f.exists():
-                continue
-            y, sr = librosa.load(str(f), sr=None, mono=True)
-            if sr_ref is None:
-                sr_ref = sr
-            elif sr != sr_ref:
-                y, _ = librosa.load(str(f), sr=sr_ref, mono=True)
-            loaded[stem] = y.astype(np.float32)
-
-        if "drums" not in loaded:
-            raise AudioAnalysisError("Demucs не вернул обязательный drums stem")
-
-        max_len = max(len(v) for v in loaded.values())
-        for k, v in list(loaded.items()):
-            loaded[k] = _align_length(v, max_len)
-
-        logger.info("Beat-analysis: Demucs stems loaded=%s", sorted(loaded.keys()))
-        return loaded, int(sr_ref or 44100)
-
+    logger.info(
+        "Beat-analysis: Demucs cache reused=%s model=%s stems=%s dir=%s",
+        cache_result.reused,
+        cache_result.model_name,
+        sorted(loaded.keys()),
+        cache_result.stems_dir,
+    )
+    return loaded, int(sr_ref or 44100)
 
 def _load_hpss_fallback(audio_path: str) -> tuple[dict[str, np.ndarray], int]:
     try:

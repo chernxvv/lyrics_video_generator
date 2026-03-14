@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
 import re
-import shutil
-import subprocess
-import tempfile
 import time
 import warnings
 
@@ -16,6 +12,7 @@ import numpy as np
 from pathlib import Path
 
 from core.audio import AudioError, probe_audio_duration
+from core.demucs_cache import ensure_demucs_stems_cached
 from core.line_alignment import (
     LineAlignmentConfig,
     RecognizedWord,
@@ -49,56 +46,6 @@ def _guess_language_code(lines: list[str]) -> str:
     if re.search(r"[а-яА-ЯёЁ]", joined):
         return "ru"
     return "en"
-
-
-def _run_demucs_vocals_stem(audio_path: str) -> str | None:
-    if shutil.which("demucs") is None:
-        logger.info("Автосинхронизация: Demucs CLI не найден, используем full mix")
-        return None
-
-    src_path = Path(audio_path)
-    if not src_path.exists():
-        return None
-
-    stat = src_path.stat()
-    cache_key = f"{src_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
-    cache_hash = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()[:16]
-    cache_dir = Path(tempfile.gettempdir()) / "lvg_demucs_cache" / cache_hash
-    cache_vocals = cache_dir / "vocals.wav"
-
-    if cache_vocals.exists() and cache_vocals.stat().st_size > 0:
-        logger.info("Автосинхронизация: переиспользуем vocals stem из кэша: %s", cache_vocals)
-        return str(cache_vocals)
-
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    last_err = ""
-    for model_name in ("htdemucs_6s", "htdemucs"):
-        cmd = [
-            "demucs",
-            "-n",
-            model_name,
-            "--device",
-            "cpu",
-            "-o",
-            str(cache_dir),
-            audio_path,
-        ]
-        logger.info("Автосинхронизация: запуск Demucs model=%s", model_name)
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if res.returncode == 0:
-            vocals_candidates = list(cache_dir.glob("**/vocals.wav"))
-            if vocals_candidates:
-                cached = vocals_candidates[0]
-                shutil.copy2(cached, cache_vocals)
-                logger.info("Автосинхронизация: Demucs vocals stem подготовлен: %s", cache_vocals)
-                return str(cache_vocals)
-            last_err = "Demucs завершился без vocals stem"
-            continue
-        last_err = (res.stderr or res.stdout or "")[-800:]
-
-    logger.warning("Автосинхронизация: Demucs недоступен/ошибка, fallback на full mix: %s", last_err)
-    return None
 
 
 def _extract_words_and_segments(aligned_result: dict) -> tuple[list[dict], list[dict]]:
@@ -146,10 +93,22 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
 
     source_audio = audio_path
     source_type = "full_mix"
-    vocals_stem = _run_demucs_vocals_stem(audio_path)
+    try:
+        demucs_cache = ensure_demucs_stems_cached(audio_path, preferred_models=("htdemucs_6s", "htdemucs"))
+        vocals_stem = demucs_cache.stem_paths.get("vocals")
+    except RuntimeError as exc:
+        logger.warning("Автосинхронизация: Demucs недоступен/ошибка, fallback на full mix: %s", exc)
+        vocals_stem = None
+
     if vocals_stem:
-        source_audio = vocals_stem
+        source_audio = str(vocals_stem)
         source_type = "vocals_stem"
+        logger.info(
+            "Автосинхронизация: Demucs cache reused=%s model=%s stems=%s",
+            demucs_cache.reused,
+            demucs_cache.model_name,
+            sorted(demucs_cache.stem_paths.keys()),
+        )
 
     logger.info("Автосинхронизация: backend=whisperx word-level, lang=%s, source=%s", language_code, source_type)
 
