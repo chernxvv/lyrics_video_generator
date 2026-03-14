@@ -45,9 +45,9 @@ def _add_flash_blob(
     intensity: float,
 ) -> None:
     blob = np.exp(-(((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * sigma**2))).astype(np.float32)
-    flash_strength = np.clip(blob[..., None] * intensity, 0.0, 0.82)
-    frame += (255.0 - frame) * flash_strength * 0.24
-    frame += flash_strength * color.reshape(1, 1, 3) * 0.44
+    flash_strength = np.clip(blob[..., None] * intensity, 0.0, 0.76)
+    frame += (255.0 - frame) * flash_strength * 0.16
+    frame += flash_strength * color.reshape(1, 1, 3) * 0.56
 
 
 def _smoothed_chaos(events, t: float) -> float:
