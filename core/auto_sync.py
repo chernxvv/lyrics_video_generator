@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 import time
+import warnings
 
 import numpy as np
 
@@ -138,6 +140,10 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
     language_code = _guess_language_code(lines)
     russian_mode = language_code == "ru"
 
+    # Убираем шумный warning от HuggingFace про Xet, если ускоритель не установлен.
+    # Это не влияет на корректность загрузки моделей, только на способ скачивания.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
     source_audio = audio_path
     source_type = "full_mix"
     vocals_stem = _run_demucs_vocals_stem(audio_path)
@@ -151,9 +157,26 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
     compute_type = "int8"
 
     try:
-        audio = whisperx.load_audio(source_audio)
-        model = whisperx.load_model("small", device, compute_type=compute_type, language=language_code)
-        transcription = model.transcribe(audio, batch_size=8)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*torchcodec is not installed correctly.*",
+                category=UserWarning,
+            )
+
+            audio = whisperx.load_audio(source_audio)
+            try:
+                model = whisperx.load_model(
+                    "small",
+                    device,
+                    compute_type=compute_type,
+                    language=language_code,
+                    vad_method="silero",
+                )
+            except TypeError:
+                # WhisperX старых версий может не поддерживать vad_method.
+                model = whisperx.load_model("small", device, compute_type=compute_type, language=language_code)
+            transcription = model.transcribe(audio, batch_size=8)
 
         segments = transcription.get("segments") or []
         if not segments:
