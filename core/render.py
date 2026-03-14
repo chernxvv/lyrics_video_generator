@@ -213,6 +213,9 @@ def _build_lyrics_overlay(
     font_lyrics_bold,
 ) -> Image.Image:
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    if current_index < 0 or current_index >= len(lines):
+        return overlay
+
     draw = ImageDraw.Draw(overlay)
 
     active_text = lines[current_index].text
