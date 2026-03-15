@@ -36,8 +36,9 @@ def _split_lyrics_text(full_text: str) -> list[str]:
 
 def _format_mmss(seconds: float) -> str:
     safe_seconds = max(0.0, seconds)
-    mm = int(safe_seconds // 60)
-    ss = safe_seconds - (mm * 60)
+    total_centiseconds = int(round(safe_seconds * 100))
+    mm, centiseconds_remainder = divmod(total_centiseconds, 60 * 100)
+    ss = centiseconds_remainder / 100
     return f"{mm:02d}:{ss:05.2f}"
 
 
