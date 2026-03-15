@@ -82,8 +82,7 @@ def ensure_demucs_stems_cached(
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     cached = _discover_cached_stems(cache_dir)
-    primary_model = preferred_models[0] if preferred_models else ""
-    if cached and (cached.model_name == primary_model or primary_model == ""):
+    if cached and (not preferred_models or cached.model_name in preferred_models):
         return cached
 
     last_err = ""
