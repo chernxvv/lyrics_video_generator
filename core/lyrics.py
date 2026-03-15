@@ -8,11 +8,12 @@ from models import LyricLine
 
 def parse_mmss(value: str) -> float:
     raw_value = value.strip()
-    if not re.fullmatch(r"\d{2}:\d{2}", raw_value):
-        raise ValueError("Время должно быть в формате мм:сс")
-    mm, ss = raw_value.split(":")
-    seconds = int(mm) * 60 + int(ss)
-    if int(ss) >= 60:
+    if not re.fullmatch(r"\d{2}:\d{2}(?:[.,]\d{1,2})?", raw_value):
+        raise ValueError("Время должно быть в формате мм:сс или мм:сс.сс")
+    mm, ss = raw_value.split(":", 1)
+    ss = ss.replace(",", ".")
+    seconds = int(mm) * 60 + float(ss)
+    if float(ss) >= 60:
         raise ValueError("Секунды должны быть меньше 60")
     return float(seconds)
 
