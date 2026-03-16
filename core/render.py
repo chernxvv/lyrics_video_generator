@@ -704,7 +704,10 @@ def render_video(
     lyrics_width = lx2 - lx1
     lyrics_height = ly2 - ly1
     lyrics_line_gap, lyrics_block_gap = _lyrics_spacing(scale_factor)
-    frame_center_in_lyrics = (height // 2) - ly1
+    active_center_target_y = None
+    if project.orientation == "horizontal":
+        active_center_target_y = (height // 2) - ly1
+
     lyrics_overlays = {
         idx: _build_lyrics_overlay(
             lines,
@@ -716,7 +719,7 @@ def render_video(
             project.orientation,
             lyrics_line_gap,
             lyrics_block_gap,
-            active_center_target_y=frame_center_in_lyrics,
+            active_center_target_y=active_center_target_y,
         )
         for idx in range(-1, len(lines))
     }
