@@ -28,7 +28,7 @@ from core.audio_analysis import BeatAnalysisResult, analyze_bpm_and_beats
 from core.background import build_background_frame
 from core.layout import compute_layout, get_base_canvas
 from core.lyrics import active_line_index_precomputed, prepare_timeline
-from models import PaletteInfo, ProjectData, RenderSettings
+from models import PaletteInfo, ProjectData, RenderSettings, VideoOrientation
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +236,12 @@ def _measure_wrapped_height(
     return len(wrapped) * h + max(0, len(wrapped) - 1) * line_gap
 
 
+def _iter_next_lyric_indices(current_index: int, total_lines: int, orientation: VideoOrientation) -> range:
+    if orientation == "vertical":
+        return range(current_index + 1, min(total_lines, current_index + 2))
+    return range(current_index + 1, total_lines)
+
+
 def _build_lyrics_overlay(
     lines,
     current_index: int,
@@ -243,6 +249,7 @@ def _build_lyrics_overlay(
     height: int,
     font_lyrics_regular,
     font_lyrics_bold,
+    orientation: VideoOrientation,
 ) -> Image.Image:
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     if current_index < 0 or current_index >= len(lines):
@@ -274,7 +281,7 @@ def _build_lyrics_overlay(
     )
 
     next_y = active_bottom + prev_gap
-    for idx in range(current_index + 1, len(lines)):
+    for idx in _iter_next_lyric_indices(current_index, len(lines), orientation):
         next_h = _measure_wrapped_height(draw, lines[idx].text, width, font_lyrics_regular)
         if next_y + next_h > height:
             break
@@ -652,7 +659,15 @@ def render_video(
     lyrics_width = lx2 - lx1
     lyrics_height = ly2 - ly1
     lyrics_overlays = {
-        idx: _build_lyrics_overlay(lines, idx, lyrics_width, lyrics_height, font_lyrics_regular, font_lyrics_bold)
+        idx: _build_lyrics_overlay(
+            lines,
+            idx,
+            lyrics_width,
+            lyrics_height,
+            font_lyrics_regular,
+            font_lyrics_bold,
+            project.orientation,
+        )
         for idx in range(-1, len(lines))
     }
 

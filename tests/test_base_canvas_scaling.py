@@ -6,7 +6,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.layout import compute_layout, get_base_canvas
-from core.render import _build_filter_complex, _compute_uniform_scale, _scale_box, _scale_value
+from core.render import _build_filter_complex, _compute_uniform_scale, _iter_next_lyric_indices, _scale_box, _scale_value
 from models import ProjectData
 
 
@@ -83,3 +83,11 @@ def test_filter_complex_scales_metadata_and_cover_consistently() -> None:
     assert f"fontsize={_scale_value(58, final_scale)}" in final_fc
     assert f"fontsize={_scale_value(36, preview_scale)}" in preview_fc
     assert f"fontsize={_scale_value(36, final_scale)}" in final_fc
+
+
+def test_vertical_orientation_limits_next_lyrics_to_single_line() -> None:
+    assert list(_iter_next_lyric_indices(2, 8, "vertical")) == [3]
+
+
+def test_horizontal_orientation_keeps_scrollable_next_lyrics() -> None:
+    assert list(_iter_next_lyric_indices(2, 8, "horizontal")) == [3, 4, 5, 6, 7]
