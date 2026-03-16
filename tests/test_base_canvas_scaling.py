@@ -6,7 +6,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.layout import compute_layout, get_base_canvas
-from core.render import _build_filter_complex, _compute_uniform_scale, _iter_next_lyric_indices, _scale_box, _scale_value
+from core.render import _build_filter_complex, _compute_uniform_scale, _iter_next_lyric_indices, _lyrics_spacing, _scale_box, _scale_value
 from models import ProjectData
 
 
@@ -91,3 +91,14 @@ def test_vertical_orientation_limits_next_lyrics_to_single_line() -> None:
 
 def test_horizontal_orientation_keeps_scrollable_next_lyrics() -> None:
     assert list(_iter_next_lyric_indices(2, 8, "horizontal")) == [3, 4, 5, 6, 7]
+
+
+def test_lyrics_spacing_scales_with_final_resolution() -> None:
+    preview_scale = _compute_uniform_scale(540, 960, 540, 960)
+    final_scale = _compute_uniform_scale(540, 960, 1080, 1920)
+
+    preview_line_gap, preview_block_gap = _lyrics_spacing(preview_scale)
+    final_line_gap, final_block_gap = _lyrics_spacing(final_scale)
+
+    assert (preview_line_gap, preview_block_gap) == (8, 16)
+    assert (final_line_gap, final_block_gap) == (16, 32)

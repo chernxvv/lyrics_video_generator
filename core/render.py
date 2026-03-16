@@ -169,6 +169,12 @@ def _scale_box(box: tuple[int, int, int, int], scale: float) -> tuple[int, int, 
     return (sx1, sy1, sx2, sy2)
 
 
+def _lyrics_spacing(scale_factor: float) -> tuple[int, int]:
+    line_gap = _scale_value(8, scale_factor)
+    block_gap = _scale_value(16, scale_factor)
+    return line_gap, block_gap
+
+
 def _wrap_text_by_pixel_width(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -250,6 +256,8 @@ def _build_lyrics_overlay(
     font_lyrics_regular,
     font_lyrics_bold,
     orientation: VideoOrientation,
+    line_gap: int,
+    block_gap: int,
 ) -> Image.Image:
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     if current_index < 0 or current_index >= len(lines):
@@ -258,18 +266,25 @@ def _build_lyrics_overlay(
     draw = ImageDraw.Draw(overlay)
 
     active_text = lines[current_index].text
-    active_h = _measure_wrapped_height(draw, active_text, width, font_lyrics_bold)
+    active_h = _measure_wrapped_height(draw, active_text, width, font_lyrics_bold, line_gap=line_gap)
     center_y = max(0, (height - active_h) // 2)
 
-    prev_gap = 16
     side_color = (215, 215, 215, 255)
 
     prev_idx = current_index - 1
     if prev_idx >= 0:
-        prev_h = _measure_wrapped_height(draw, lines[prev_idx].text, width, font_lyrics_regular)
-        prev_y = center_y - prev_gap - prev_h
+        prev_h = _measure_wrapped_height(draw, lines[prev_idx].text, width, font_lyrics_regular, line_gap=line_gap)
+        prev_y = center_y - block_gap - prev_h
         if prev_y >= 0:
-            _draw_wrapped_block(draw, lines[prev_idx].text, prev_y, width, font_lyrics_regular, side_color)
+            _draw_wrapped_block(
+                draw,
+                lines[prev_idx].text,
+                prev_y,
+                width,
+                font_lyrics_regular,
+                side_color,
+                line_gap=line_gap,
+            )
 
     active_bottom, _ = _draw_wrapped_block(
         draw,
@@ -278,15 +293,24 @@ def _build_lyrics_overlay(
         width,
         font_lyrics_bold,
         (255, 255, 255, 255),
+        line_gap=line_gap,
     )
 
-    next_y = active_bottom + prev_gap
+    next_y = active_bottom + block_gap
     for idx in _iter_next_lyric_indices(current_index, len(lines), orientation):
-        next_h = _measure_wrapped_height(draw, lines[idx].text, width, font_lyrics_regular)
+        next_h = _measure_wrapped_height(draw, lines[idx].text, width, font_lyrics_regular, line_gap=line_gap)
         if next_y + next_h > height:
             break
-        next_y, _ = _draw_wrapped_block(draw, lines[idx].text, next_y, width, font_lyrics_regular, side_color)
-        next_y += prev_gap
+        next_y, _ = _draw_wrapped_block(
+            draw,
+            lines[idx].text,
+            next_y,
+            width,
+            font_lyrics_regular,
+            side_color,
+            line_gap=line_gap,
+        )
+        next_y += block_gap
 
     return overlay
 
@@ -658,6 +682,7 @@ def render_video(
     lx1, ly1, lx2, ly2 = _scale_box(layout.lyrics_box, scale_factor)
     lyrics_width = lx2 - lx1
     lyrics_height = ly2 - ly1
+    lyrics_line_gap, lyrics_block_gap = _lyrics_spacing(scale_factor)
     lyrics_overlays = {
         idx: _build_lyrics_overlay(
             lines,
@@ -667,6 +692,8 @@ def render_video(
             font_lyrics_regular,
             font_lyrics_bold,
             project.orientation,
+            lyrics_line_gap,
+            lyrics_block_gap,
         )
         for idx in range(-1, len(lines))
     }
