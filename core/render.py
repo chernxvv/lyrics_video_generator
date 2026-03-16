@@ -343,7 +343,7 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
 
     cover_w_px = layout.cover_box[2] - layout.cover_box[0]
     separator_w = max(48, cover_w_px // 5)
-    separator_x_expr = f"(w-{separator_w})/2"
+    separator_x_expr = f"(iw-{separator_w})/2"
 
     logger.debug(
         "Separator line layout: artist_bottom=%d title_top=%d free_space=%d separator_y=%d separator_w=%d separator_x=%s",
