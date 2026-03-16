@@ -27,6 +27,16 @@ class Layout:
     date_y: int
 
 
+BASE_CANVAS_BY_ORIENTATION: dict[VideoOrientation, tuple[int, int]] = {
+    "vertical": (540, 960),
+    "horizontal": (960, 540),
+}
+
+
+def get_base_canvas(orientation: VideoOrientation) -> tuple[int, int]:
+    return BASE_CANVAS_BY_ORIENTATION[orientation]
+
+
 def _layout_vertical(width: int, height: int) -> Layout:
     lyrics_h = int(height * 0.18)
     lyrics_w = int(width * 0.8)
@@ -71,6 +81,8 @@ def _layout_horizontal(width: int, height: int) -> Layout:
 
 
 def compute_layout(width: int, height: int, orientation: VideoOrientation) -> Layout:
+    _ = (width, height)
+    width, height = get_base_canvas(orientation)
     if orientation == "horizontal":
         return _layout_horizontal(width, height)
     return _layout_vertical(width, height)
