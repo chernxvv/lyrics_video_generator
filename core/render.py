@@ -432,7 +432,7 @@ def _render_stream_to_ffmpeg(
                 if not done:
                     now = time.perf_counter()
                     if now - last_heartbeat >= 2.0:
-                        logger.info(
+                        logger.debug(
                             "Render progress heartbeat: written_frames=%d/%d, written_chunks=%d/%d, pending=%d, ready=%d",
                             written_frames,
                             total_frames,
