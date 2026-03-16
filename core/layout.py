@@ -21,7 +21,6 @@ from models import VideoOrientation
 @dataclass(slots=True)
 class Layout:
     artist_y: int
-    dash_y: int
     title_y: int
     cover_box: tuple[int, int, int, int]
     lyrics_box: tuple[int, int, int, int]
@@ -41,7 +40,6 @@ def _layout_vertical(width: int, height: int) -> Layout:
 
     return Layout(
         artist_y=int(height * 0.07),
-        dash_y=int(height * 0.11),
         title_y=int(height * 0.145),
         cover_box=(cover_x, cover_y, cover_x + cover_w, cover_y + cover_h),
         lyrics_box=(lyrics_x, lyrics_y, lyrics_x + lyrics_w, lyrics_y + lyrics_h),
@@ -65,7 +63,6 @@ def _layout_horizontal(width: int, height: int) -> Layout:
 
     return Layout(
         artist_y=safe_y,
-        dash_y=safe_y + int(height * 0.06),
         title_y=safe_y + int(height * 0.12),
         cover_box=(cover_x, cover_y, cover_x + cover_w, cover_y + cover_h),
         lyrics_box=(right_start, lyrics_y, right_start + right_width, lyrics_y + lyrics_h),
