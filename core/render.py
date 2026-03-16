@@ -341,15 +341,18 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
     else:
         separator_y = min(max(ideal_separator_y, min_separator_y), max_separator_y)
 
-    separator_w = max(64, int(layout.cover_box[2] - layout.cover_box[0]) // 3)
+    cover_w_px = layout.cover_box[2] - layout.cover_box[0]
+    separator_w = max(48, cover_w_px // 5)
+    separator_x_expr = f"(w-{separator_w})/2"
 
     logger.debug(
-        "Separator line layout: artist_bottom=%d title_top=%d free_space=%d separator_y=%d separator_w=%d",
+        "Separator line layout: artist_bottom=%d title_top=%d free_space=%d separator_y=%d separator_w=%d separator_x=%s",
         artist_bottom_y,
         title_top_y,
         free_space,
         separator_y,
         separator_w,
+        separator_x_expr,
     )
 
     return (
@@ -357,7 +360,7 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
         f"[0:v]format=nv12[base];"
         f"[base][cover]overlay={cover_box_x}:{cover_box_y}[v1];"
         f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:{_drawtext_style(artist_size, META_FONT_FILE)},"
-        f"drawbox=x=(w-{separator_w})/2:y={separator_y}:w={separator_w}:h={separator_h}:color=white@1:t=fill,"
+        f"drawbox=x={separator_x_expr}:y={separator_y}:w={separator_w}:h={separator_h}:color=white@1:t=fill,"
         f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:{_drawtext_style(title_size, META_FONT_FILE)},"
         f"drawtext=text='{release_date}':x=(w-text_w)/2:y={layout.date_y}:{_drawtext_style(36, META_FONT_FILE)}[vout]"
     )
