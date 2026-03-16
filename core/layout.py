@@ -58,25 +58,27 @@ def _layout_vertical(width: int, height: int) -> Layout:
 
 
 def _layout_horizontal(width: int, height: int) -> Layout:
-    safe_x = int(width * 0.06)
-    safe_y = int(height * 0.08)
+    side_margin = int(width * 0.04)
+    middle_gap = int(width * 0.08)
 
-    cover_h = int(height * 0.46)
-    cover_w = cover_h
-    cover_x = safe_x
-    cover_y = int(height * 0.18)
+    box_y = int(height * 0.17)
+    box_h = int(height * 0.74)
+    box_w = (width - side_margin * 2 - middle_gap) // 2
 
-    right_start = cover_x + cover_w + int(width * 0.045)
-    right_width = width - right_start - safe_x
-    lyrics_h = int(height * 0.38)
-    lyrics_y = height - safe_y - lyrics_h
+    cover_x = side_margin
+    cover_y = box_y
+
+    right_start = cover_x + box_w + middle_gap
+    right_width = box_w
+    lyrics_y = box_y
+    lyrics_h = box_h
 
     return Layout(
-        artist_y=safe_y,
-        title_y=safe_y + int(height * 0.12),
-        cover_box=(cover_x, cover_y, cover_x + cover_w, cover_y + cover_h),
+        artist_y=int(height * 0.025),
+        title_y=int(height * 0.105),
+        cover_box=(cover_x, cover_y, cover_x + box_w, cover_y + box_h),
         lyrics_box=(right_start, lyrics_y, right_start + right_width, lyrics_y + lyrics_h),
-        date_y=safe_y + int(height * 0.20),
+        date_y=int(height * 0.94),
     )
 
 
