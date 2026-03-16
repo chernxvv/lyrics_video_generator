@@ -358,7 +358,8 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool, scale_fa
 
     artist = _escape_drawtext(project.artist)
     title = _escape_drawtext(project.title)
-    release_date = _escape_drawtext(project.release_date)
+    release_date_raw = project.release_date.strip()
+    release_date = _escape_drawtext(release_date_raw) if release_date_raw else ""
 
     if use_cuda:
         logger.info("Выбрана ветка filter_complex: CUDA (hwupload_cuda/scale_cuda/hwdownload)")
@@ -411,15 +412,21 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool, scale_fa
         separator_x_expr,
     )
 
-    return (
+    filter_chain = (
         f"{cover_chain};"
         f"[0:v]format=nv12[base];"
         f"[base][cover]overlay={cover_box_x}:{cover_box_y}[v1];"
         f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={artist_y}:{_drawtext_style(artist_size, META_FONT_FILE)},"
         f"drawbox=x={separator_x_expr}:y={separator_y}:w={separator_w}:h={separator_h}:color=white@1:t=fill,"
-        f"drawtext=text='{title}':x=(w-text_w)/2:y={title_y}:{_drawtext_style(title_size, META_FONT_FILE)},"
-        f"drawtext=text='{release_date}':x=(w-text_w)/2:y={date_y}:{_drawtext_style(date_size, META_FONT_FILE)}[vout]"
+        f"drawtext=text='{title}':x=(w-text_w)/2:y={title_y}:{_drawtext_style(title_size, META_FONT_FILE)}"
     )
+
+    if release_date:
+        filter_chain += (
+            f",drawtext=text='{release_date}':x=(w-text_w)/2:y={date_y}:{_drawtext_style(date_size, META_FONT_FILE)}"
+        )
+
+    return f"{filter_chain}[vout]"
 
 
 def _drain_stderr(stderr_pipe, sink: list[str], stop_event: threading.Event) -> None:
