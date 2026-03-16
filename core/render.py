@@ -26,7 +26,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from core.audio_analysis import BeatAnalysisResult, analyze_bpm_and_beats
 from core.background import build_background_frame
-from core.layout import compute_layout
+from core.layout import compute_layout, get_base_canvas
 from core.lyrics import active_line_index_precomputed, prepare_timeline
 from models import PaletteInfo, ProjectData, RenderSettings
 
@@ -148,6 +148,25 @@ def _drawtext_style(fontsize: int, font_filename: str, *, bordered: bool = False
     fontfile = str(_require_font_path(font_filename)).replace("\\", "/")
     border = ":borderw=1:bordercolor=black" if bordered else ""
     return f"fontfile='{_escape_drawtext(fontfile)}':fontsize={fontsize}:fontcolor=white{border}"
+
+
+def _compute_uniform_scale(base_width: int, base_height: int, out_width: int, out_height: int) -> float:
+    if base_width <= 0 or base_height <= 0:
+        raise RenderError("Некорректный базовый canvas: ширина/высота должны быть > 0")
+    return min(out_width / base_width, out_height / base_height)
+
+
+def _scale_value(value: int, scale: float, minimum: int = 1) -> int:
+    return max(minimum, int(round(value * scale)))
+
+
+def _scale_box(box: tuple[int, int, int, int], scale: float) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = box
+    sx1 = _scale_value(x1, scale, minimum=0)
+    sy1 = _scale_value(y1, scale, minimum=0)
+    sx2 = _scale_value(x2, scale, minimum=sx1 + 1)
+    sy2 = _scale_value(y2, scale, minimum=sy1 + 1)
+    return (sx1, sy1, sx2, sy2)
 
 
 def _wrap_text_by_pixel_width(
@@ -299,11 +318,12 @@ def _render_chunk(
     return chunk_start, frames
 
 
-def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
-    cover_w = layout.cover_box[2] - layout.cover_box[0]
-    cover_h = layout.cover_box[3] - layout.cover_box[1]
-    cover_box_x = layout.cover_box[0]
-    cover_box_y = layout.cover_box[1]
+def _build_filter_complex(project: ProjectData, layout, use_cuda: bool, scale_factor: float) -> str:
+    scaled_cover_box = _scale_box(layout.cover_box, scale_factor)
+    cover_w = scaled_cover_box[2] - scaled_cover_box[0]
+    cover_h = scaled_cover_box[3] - scaled_cover_box[1]
+    cover_box_x = scaled_cover_box[0]
+    cover_box_y = scaled_cover_box[1]
 
     artist = _escape_drawtext(project.artist)
     title = _escape_drawtext(project.title)
@@ -323,12 +343,18 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
             f"crop={cover_w}:{cover_h}:(in_w-{cover_w})/2:(in_h-{cover_h})/2[cover]"
         )
 
-    artist_size = 58
-    title_size = 52
-    separator_h = 3
-    min_separator_margin = 8
-    artist_bottom_y = layout.artist_y + artist_size
-    title_top_y = layout.title_y
+    artist_size = _scale_value(58, scale_factor)
+    title_size = _scale_value(52, scale_factor)
+    date_size = _scale_value(36, scale_factor)
+    separator_h = _scale_value(3, scale_factor)
+    min_separator_margin = _scale_value(8, scale_factor)
+
+    artist_y = _scale_value(layout.artist_y, scale_factor, minimum=0)
+    title_y = _scale_value(layout.title_y, scale_factor, minimum=0)
+    date_y = _scale_value(layout.date_y, scale_factor, minimum=0)
+
+    artist_bottom_y = artist_y + artist_size
+    title_top_y = title_y
 
     free_space = max(0, title_top_y - artist_bottom_y)
     separator_space = max(0, free_space - separator_h)
@@ -341,8 +367,7 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
     else:
         separator_y = min(max(ideal_separator_y, min_separator_y), max_separator_y)
 
-    cover_w_px = layout.cover_box[2] - layout.cover_box[0]
-    separator_w = max(32, cover_w_px // 8)
+    separator_w = max(_scale_value(32, scale_factor), cover_w // 8)
     separator_x_expr = f"(iw-{separator_w})/2"
 
     logger.debug(
@@ -359,10 +384,10 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
         f"{cover_chain};"
         f"[0:v]format=nv12[base];"
         f"[base][cover]overlay={cover_box_x}:{cover_box_y}[v1];"
-        f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:{_drawtext_style(artist_size, META_FONT_FILE)},"
+        f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={artist_y}:{_drawtext_style(artist_size, META_FONT_FILE)},"
         f"drawbox=x={separator_x_expr}:y={separator_y}:w={separator_w}:h={separator_h}:color=white@1:t=fill,"
-        f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:{_drawtext_style(title_size, META_FONT_FILE)},"
-        f"drawtext=text='{release_date}':x=(w-text_w)/2:y={layout.date_y}:{_drawtext_style(36, META_FONT_FILE)}[vout]"
+        f"drawtext=text='{title}':x=(w-text_w)/2:y={title_y}:{_drawtext_style(title_size, META_FONT_FILE)},"
+        f"drawtext=text='{release_date}':x=(w-text_w)/2:y={date_y}:{_drawtext_style(date_size, META_FONT_FILE)}[vout]"
     )
 
 
@@ -575,7 +600,9 @@ def render_video(
         raise RenderError("Ошибка рендера: длительность слишком мала, кадров=0")
 
     lines, start_times = prepare_timeline(project.lyrics)
+    base_width, base_height = get_base_canvas(project.orientation)
     layout = compute_layout(width, height, project.orientation)
+    scale_factor = _compute_uniform_scale(base_width, base_height, width, height)
 
     thread_count = max(1, settings.thread_count)
     chunk_size = max(1, settings.frame_chunk_size)
@@ -599,12 +626,13 @@ def render_video(
         effective_background_mode,
     )
     logger.info(
-        "Ключевые layout-параметры: cover_box=%s, lyrics_box=%s, artist_y=%d, title_y=%d",
+        "Ключевые layout-параметры (base): cover_box=%s, lyrics_box=%s, artist_y=%d, title_y=%d",
         layout.cover_box,
         layout.lyrics_box,
         layout.artist_y,
         layout.title_y,
     )
+    logger.info("Базовый canvas=%dx%d, scale_factor=%.4f", base_width, base_height, scale_factor)
     logger.info(
         "Параметры рендера: %dx%d, fps=%d, длительность=%.2fs, кадров=%d, threads=%d, chunk=%d",
         width,
@@ -616,9 +644,11 @@ def render_video(
         chunk_size,
     )
 
-    font_lyrics_regular = _load_font(25, LYRICS_FONT_REGULAR_FILE)
-    font_lyrics_bold = _load_font(28, LYRICS_FONT_BOLD_FILE)
-    lx1, ly1, lx2, ly2 = layout.lyrics_box
+    lyrics_regular_size = _scale_value(25, scale_factor)
+    lyrics_bold_size = _scale_value(28, scale_factor)
+    font_lyrics_regular = _load_font(lyrics_regular_size, LYRICS_FONT_REGULAR_FILE)
+    font_lyrics_bold = _load_font(lyrics_bold_size, LYRICS_FONT_BOLD_FILE)
+    lx1, ly1, lx2, ly2 = _scale_box(layout.lyrics_box, scale_factor)
     lyrics_width = lx2 - lx1
     lyrics_height = ly2 - ly1
     lyrics_overlays = {
@@ -626,7 +656,7 @@ def render_video(
         for idx in range(-1, len(lines))
     }
 
-    filter_complex = _build_filter_complex(project, layout, use_cuda=use_cuda_filters)
+    filter_complex = _build_filter_complex(project, layout, use_cuda=use_cuda_filters, scale_factor=scale_factor)
 
     cmd = [
         "ffmpeg",
@@ -707,7 +737,7 @@ def render_video(
         err = str(exc)
         if use_cuda_filters and _is_cuda_runtime_failure(err):
             logger.warning("CUDA runtime-сбой, выполняется fallback на CPU filtergraph: %s", err[-400:])
-            fallback_filter = _build_filter_complex(project, layout, use_cuda=False)
+            fallback_filter = _build_filter_complex(project, layout, use_cuda=False, scale_factor=scale_factor)
             fallback_cmd = cmd.copy()
             fc_idx = fallback_cmd.index("-filter_complex")
             fallback_cmd[fc_idx + 1] = fallback_filter
