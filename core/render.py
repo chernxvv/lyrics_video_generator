@@ -325,17 +325,42 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
 
     artist_size = 58
     title_size = 52
-    dash_size = 52
-    gap_between = layout.title_y - (layout.artist_y + artist_size)
-    free_space_for_dash = max(0, gap_between - dash_size)
-    dash_y = layout.artist_y + artist_size + max(8, free_space_for_dash // 2)
+    separator_h = 3
+    min_separator_margin = 8
+    artist_bottom_y = layout.artist_y + artist_size
+    title_top_y = layout.title_y
+
+    free_space = max(0, title_top_y - artist_bottom_y)
+    separator_space = max(0, free_space - separator_h)
+    ideal_separator_y = artist_bottom_y + (separator_space // 2)
+
+    min_separator_y = artist_bottom_y + min_separator_margin
+    max_separator_y = title_top_y - min_separator_margin - separator_h
+    if max_separator_y < min_separator_y:
+        separator_y = min_separator_y
+    else:
+        separator_y = min(max(ideal_separator_y, min_separator_y), max_separator_y)
+
+    cover_w_px = layout.cover_box[2] - layout.cover_box[0]
+    separator_w = max(32, cover_w_px // 8)
+    separator_x_expr = f"(iw-{separator_w})/2"
+
+    logger.debug(
+        "Separator line layout: artist_bottom=%d title_top=%d free_space=%d separator_y=%d separator_w=%d separator_x=%s",
+        artist_bottom_y,
+        title_top_y,
+        free_space,
+        separator_y,
+        separator_w,
+        separator_x_expr,
+    )
 
     return (
         f"{cover_chain};"
         f"[0:v]format=nv12[base];"
         f"[base][cover]overlay={cover_box_x}:{cover_box_y}[v1];"
         f"[v1]drawtext=text='{artist}':x=(w-text_w)/2:y={layout.artist_y}:{_drawtext_style(artist_size, META_FONT_FILE)},"
-        f"drawtext=text='—':x=(w-text_w)/2:y={dash_y}:{_drawtext_style(dash_size, META_FONT_FILE)},"
+        f"drawbox=x={separator_x_expr}:y={separator_y}:w={separator_w}:h={separator_h}:color=white@1:t=fill,"
         f"drawtext=text='{title}':x=(w-text_w)/2:y={layout.title_y}:{_drawtext_style(title_size, META_FONT_FILE)},"
         f"drawtext=text='{release_date}':x=(w-text_w)/2:y={layout.date_y}:{_drawtext_style(36, META_FONT_FILE)}[vout]"
     )
