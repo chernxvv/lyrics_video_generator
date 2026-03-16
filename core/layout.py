@@ -74,8 +74,8 @@ def _layout_horizontal(width: int, height: int) -> Layout:
     lyrics_h = box_h
 
     return Layout(
-        artist_y=int(height * 0.02),
-        title_y=int(height * 0.095),
+        artist_y=int(height * 0.025),
+        title_y=int(height * 0.135),
         cover_box=(cover_x, cover_y, cover_x + box_w, cover_y + box_h),
         lyrics_box=(right_start, lyrics_y, right_start + right_width, lyrics_y + lyrics_h),
         date_y=int(height * 0.94),

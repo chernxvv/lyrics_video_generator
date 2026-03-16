@@ -376,9 +376,9 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool, scale_fa
         )
 
     if project.orientation == "horizontal":
-        artist_base_size = 46
-        title_base_size = 40
-        date_base_size = 30
+        artist_base_size = 37
+        title_base_size = 32
+        date_base_size = 24
     else:
         artist_base_size = 58
         title_base_size = 52
@@ -398,15 +398,14 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool, scale_fa
     title_top_y = title_y
 
     free_space = max(0, title_top_y - artist_bottom_y)
-    separator_space = max(0, free_space - separator_h)
-    ideal_separator_y = artist_bottom_y + (separator_space // 2)
+    centered_separator_y = artist_bottom_y + (free_space // 2) - (separator_h // 2)
 
     min_separator_y = artist_bottom_y + min_separator_margin
     max_separator_y = title_top_y - min_separator_margin - separator_h
     if max_separator_y < min_separator_y:
-        separator_y = min_separator_y
+        separator_y = max(0, centered_separator_y)
     else:
-        separator_y = min(max(ideal_separator_y, min_separator_y), max_separator_y)
+        separator_y = min(max(centered_separator_y, min_separator_y), max_separator_y)
 
     separator_w = max(_scale_value(32, scale_factor), cover_w // 8)
     separator_x_expr = f"(iw-{separator_w})/2"
