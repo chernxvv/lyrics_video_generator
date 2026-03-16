@@ -189,7 +189,7 @@ class MainWindow(QMainWindow):
         self.date_input = QLineEdit()
         meta_layout.addRow("Исполнитель", self.artist_input)
         meta_layout.addRow("Название", self.title_input)
-        meta_layout.addRow("Дата релиза", self.date_input)
+        meta_layout.addRow("Дата релиза (опционально)", self.date_input)
 
         sync_box = QGroupBox("Синхронизация")
         sync_layout = QVBoxLayout(sync_box)
