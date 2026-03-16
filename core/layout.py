@@ -58,11 +58,11 @@ def _layout_vertical(width: int, height: int) -> Layout:
 
 
 def _layout_horizontal(width: int, height: int) -> Layout:
-    side_margin = int(width * 0.035)
+    side_margin = int(width * 0.04)
     middle_gap = int(width * 0.08)
 
-    box_y = int(height * 0.165)
-    box_h = int(height * 0.76)
+    box_y = int(height * 0.17)
+    box_h = int(height * 0.74)
     box_w = (width - side_margin * 2 - middle_gap) // 2
 
     cover_x = side_margin

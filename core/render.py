@@ -375,9 +375,18 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool, scale_fa
             f"crop={cover_w}:{cover_h}:(in_w-{cover_w})/2:(in_h-{cover_h})/2[cover]"
         )
 
-    artist_size = _scale_value(58, scale_factor)
-    title_size = _scale_value(52, scale_factor)
-    date_size = _scale_value(36, scale_factor)
+    if project.orientation == "horizontal":
+        artist_base_size = 46
+        title_base_size = 40
+        date_base_size = 30
+    else:
+        artist_base_size = 58
+        title_base_size = 52
+        date_base_size = 36
+
+    artist_size = _scale_value(artist_base_size, scale_factor)
+    title_size = _scale_value(title_base_size, scale_factor)
+    date_size = _scale_value(date_base_size, scale_factor)
     separator_h = _scale_value(3, scale_factor)
     min_separator_margin = _scale_value(8, scale_factor)
 
