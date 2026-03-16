@@ -407,7 +407,7 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool, scale_fa
     else:
         separator_y = min(max(centered_separator_y, min_separator_y), max_separator_y)
 
-    separator_w = max(_scale_value(32, scale_factor), cover_w // 8)
+    separator_w = max(_scale_value(24, scale_factor), cover_w // 10)
     separator_x_expr = f"(iw-{separator_w})/2"
 
     logger.debug(
