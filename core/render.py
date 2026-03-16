@@ -342,7 +342,7 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool) -> str:
         separator_y = min(max(ideal_separator_y, min_separator_y), max_separator_y)
 
     cover_w_px = layout.cover_box[2] - layout.cover_box[0]
-    separator_w = max(48, cover_w_px // 5)
+    separator_w = max(32, cover_w_px // 8)
     separator_x_expr = f"(iw-{separator_w})/2"
 
     logger.debug(
