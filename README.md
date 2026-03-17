@@ -28,27 +28,25 @@ run.bat
 
 > В системе должны быть установлены `ffmpeg` и `ffprobe`.
 
-### Пример результата
+## Примеры результата
 
-Vertical (`9:16`), Мягкий градиент, Preview:
+**Vertical (`9:16`) · Мягкий градиент · Preview**
 
 https://github.com/user-attachments/assets/ca55d529-f876-4a39-afbf-0d0ac4412a87
 
-Vertical (`9:16`), Динамический BPM-фон, Preview:
+**Vertical (`9:16`) · Динамический BPM-фон · Preview**
 
 https://github.com/user-attachments/assets/0e230c52-47be-4ab2-b99e-bf1f6c71c6a0
 
-Горизонтальная ориентация (`16:9`), Мягкий градиент, Preview:
+**Horizontal (`16:9`) · Мягкий градиент · Preview**
 
 https://github.com/user-attachments/assets/79e4012c-45dd-4145-85e4-22393296b4d1
 
-Горизонтальная ориентация (`16:9`), Динамический BPM-фон, Preview:
+**Horizontal (`16:9`) · Динамический BPM-фон · Preview**
 
 https://github.com/user-attachments/assets/130ea04b-9a82-4d6d-97f0-3f9bb9726ef9
 
 ## Как использовать
-
-### GUI
 
 ![GUI screenshot](https://github.com/user-attachments/assets/56ff56ba-6351-420f-a054-1b7b7ff76f5f)
 
@@ -60,7 +58,7 @@ https://github.com/user-attachments/assets/130ea04b-9a82-4d6d-97f0-3f9bb9726ef9
 4. Выберите ориентацию, режим фона и render mode (`Preview`/`Final`).
 5. Нажмите «Сгенерировать видео».
 
-## Основные характеристики
+## Основные возможности
 
 - Desktop GUI workflow: загрузка аудио/обложки, ввод метаданных, настройка синхронизации и экспорт видео.
 - Две ориентации: `9:16` (vertical) и `16:9` (horizontal).
@@ -90,7 +88,7 @@ https://github.com/user-attachments/assets/130ea04b-9a82-4d6d-97f0-3f9bb9726ef9
 
 - [SPECIFICATION.md](SPECIFICATION.md)
 
-## Политика проекта
+## Project policies and contribution
 
 - [Contributing guide](CONTRIBUTING.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
