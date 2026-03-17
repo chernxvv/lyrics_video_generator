@@ -59,6 +59,23 @@ source .venv/bin/activate
 pip install .[autosync]
 ```
 
+### Стабильный режим установки (через `constraints.txt`)
+
+Для "железной" воспроизводимости используйте constraints-файл с фиксированными версиями.
+Это гарантирует одинаковый набор пакетов между машинами/CI и снижает риск дрейфа зависимостей.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -c constraints.txt .
+# при необходимости autosync:
+pip install -c constraints.txt .[autosync]
+```
+
+Скрипт `bootstrap.py` и `run.sh`/`run.bat` работают именно в этом стабильном режиме:
+- сначала делают preflight-проверку разрешения версий;
+- затем устанавливают проект с `-c constraints.txt`.
+
 ### Установка через `requirements` (альтернатива)
 
 Если удобнее использовать requirements-файлы:
@@ -300,3 +317,15 @@ python -m compileall .
 - `soundfile`
 - `whisperx`
 - `demucs`
+
+### Пиннинг для стабильного режима (`constraints.txt`)
+
+Фиксированные версии для воспроизводимой установки:
+- `PySide6==6.10.2`
+- `Pillow==10.4.0`
+- `numpy==2.4.3`
+- `scikit-learn==1.8.0`
+- `librosa==0.11.0`
+- `soundfile==0.13.1`
+- `whisperx==3.8.2`
+- `demucs==4.0.1`
