@@ -73,8 +73,20 @@ pip install -c constraints.txt .[autosync]
 ```
 
 Скрипт `bootstrap.py` и `run.sh`/`run.bat` работают именно в этом стабильном режиме:
+- по умолчанию ставят базовый набор зависимостей (`base`);
+- с флагом `--autosync` ставят `base + autosync`;
 - сначала делают preflight-проверку разрешения версий;
 - затем устанавливают проект с `-c constraints.txt`.
+
+Короткие команды:
+
+```bash
+# Обычный запуск
+python -m bootstrap
+
+# Запуск с автосинхронизацией
+python -m bootstrap --autosync
+```
 
 ### Установка через `requirements` (альтернатива)
 
