@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import argparse
+import shutil
 import subprocess
 import sys
 import venv
@@ -23,6 +24,75 @@ def _project_root() -> Path:
 
 def _print_step(step: int, total: int, message: str) -> None:
     print(f"[шаг {step}/{total}] {message}")
+
+
+def _ensure_ffmpeg_tools() -> bool:
+    """Проверяет ffmpeg/ffprobe и пытается установить, если их нет."""
+    required_tools = ("ffmpeg", "ffprobe")
+    missing_tools = [tool for tool in required_tools if shutil.which(tool) is None]
+    if not missing_tools:
+        print("✅ Системные утилиты ffmpeg и ffprobe уже доступны.")
+        return True
+
+    print(f"⚠️ Не найдены системные утилиты: {', '.join(missing_tools)}")
+    install_attempts = _build_ffmpeg_install_commands()
+    if not install_attempts:
+        print(
+            "❌ Не удалось определить подходящий менеджер пакетов для автоустановки ffmpeg. "
+            "Установите ffmpeg вручную и запустите bootstrap снова."
+        )
+        return False
+
+    for command in install_attempts:
+        print(f"Пробую установить ffmpeg через: {' '.join(command)}")
+        result = subprocess.run(command, check=False)
+        if result.returncode != 0:
+            continue
+
+        still_missing = [tool for tool in required_tools if shutil.which(tool) is None]
+        if not still_missing:
+            print("✅ Успешно установлены ffmpeg и ffprobe.")
+            return True
+
+    print(
+        "❌ Автоматическая установка ffmpeg не удалась. "
+        "Установите ffmpeg вручную (должны появиться и ffmpeg, и ffprobe), затем повторите запуск."
+    )
+    return False
+
+
+def _build_ffmpeg_install_commands() -> list[list[str]]:
+    if sys.platform.startswith("linux"):
+        commands: list[list[str]] = []
+        if shutil.which("apt-get"):
+            commands.extend([
+                ["sudo", "apt-get", "update"],
+                ["sudo", "apt-get", "install", "-y", "ffmpeg"],
+            ])
+        elif shutil.which("dnf"):
+            commands.append(["sudo", "dnf", "install", "-y", "ffmpeg"])
+        elif shutil.which("yum"):
+            commands.append(["sudo", "yum", "install", "-y", "ffmpeg"])
+        elif shutil.which("pacman"):
+            commands.append(["sudo", "pacman", "-S", "--noconfirm", "ffmpeg"])
+        elif shutil.which("zypper"):
+            commands.append(["sudo", "zypper", "--non-interactive", "install", "ffmpeg"])
+        return commands
+
+    if sys.platform == "darwin" and shutil.which("brew"):
+        return [["brew", "install", "ffmpeg"]]
+
+    if os.name == "nt":
+        commands = []
+        if shutil.which("winget"):
+            commands.append(["winget", "install", "--id", "Gyan.FFmpeg", "-e", "--accept-source-agreements", "--accept-package-agreements"])
+        if shutil.which("choco"):
+            commands.append(["choco", "install", "ffmpeg", "-y"])
+        if shutil.which("scoop"):
+            commands.append(["scoop", "install", "ffmpeg"])
+        return commands
+
+    return []
 
 
 def _dependency_preflight(
@@ -92,14 +162,18 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    total_steps = 4
+    total_steps = 5
     project_root = _project_root()
     venv_dir = project_root / ".venv"
     constraints_path = project_root / "constraints.txt"
     install_target, mode_label = _select_install_target(args)
 
     try:
-        _print_step(1, total_steps, "Проверка виртуального окружения (.venv)")
+        _print_step(1, total_steps, "Проверка системных зависимостей (ffmpeg/ffprobe)")
+        if not _ensure_ffmpeg_tools():
+            return 1
+
+        _print_step(2, total_steps, "Проверка виртуального окружения (.venv)")
         if not venv_dir.exists():
             print(f"Создаю окружение: {venv_dir}")
             venv.EnvBuilder(with_pip=True).create(venv_dir)
@@ -114,7 +188,7 @@ def main() -> int:
             print("❌ Не найден constraints.txt в корне проекта. Восстановите файл и запустите bootstrap снова.")
             return 1
 
-        _print_step(2, total_steps, "Обновление pip/setuptools/wheel")
+        _print_step(3, total_steps, "Обновление pip/setuptools/wheel")
         subprocess.run(
             [str(venv_python), "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"],
             check=True,
@@ -127,7 +201,7 @@ def main() -> int:
         else:
             print("ℹ️ Позже можно добавить autosync командой: python -m bootstrap --autosync")
 
-        _print_step(3, total_steps, "Preflight-проверка зависимостей (constraints)")
+        _print_step(4, total_steps, "Preflight-проверка зависимостей (constraints)")
         if not _dependency_preflight(venv_python, project_root, constraints_path, install_target):
             return 1
 
@@ -137,7 +211,7 @@ def main() -> int:
             cwd=project_root,
         )
 
-        _print_step(4, total_steps, "Запуск приложения")
+        _print_step(5, total_steps, "Запуск приложения")
         result = subprocess.run([str(venv_python), "main.py"], cwd=project_root, check=False)
         return result.returncode
 
