@@ -63,20 +63,25 @@ def _ensure_ffmpeg_tools() -> bool:
 
 def _build_ffmpeg_install_commands() -> list[list[str]]:
     if sys.platform.startswith("linux"):
+        use_sudo = hasattr(os, "geteuid") and os.geteuid() != 0 and shutil.which("sudo") is not None
+
+        def maybe_sudo(command: list[str]) -> list[str]:
+            return ["sudo", *command] if use_sudo else command
+
         commands: list[list[str]] = []
         if shutil.which("apt-get"):
             commands.extend([
-                ["sudo", "apt-get", "update"],
-                ["sudo", "apt-get", "install", "-y", "ffmpeg"],
+                maybe_sudo(["apt-get", "update"]),
+                maybe_sudo(["apt-get", "install", "-y", "ffmpeg"]),
             ])
         elif shutil.which("dnf"):
-            commands.append(["sudo", "dnf", "install", "-y", "ffmpeg"])
+            commands.append(maybe_sudo(["dnf", "install", "-y", "ffmpeg"]))
         elif shutil.which("yum"):
-            commands.append(["sudo", "yum", "install", "-y", "ffmpeg"])
+            commands.append(maybe_sudo(["yum", "install", "-y", "ffmpeg"]))
         elif shutil.which("pacman"):
-            commands.append(["sudo", "pacman", "-S", "--noconfirm", "ffmpeg"])
+            commands.append(maybe_sudo(["pacman", "-S", "--noconfirm", "ffmpeg"]))
         elif shutil.which("zypper"):
-            commands.append(["sudo", "zypper", "--non-interactive", "install", "ffmpeg"])
+            commands.append(maybe_sudo(["zypper", "--non-interactive", "install", "ffmpeg"]))
         return commands
 
     if sys.platform == "darwin" and shutil.which("brew"):
