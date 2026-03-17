@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import os
+import argparse
 import subprocess
+import sys
 import venv
 from pathlib import Path
 
@@ -23,7 +25,12 @@ def _print_step(step: int, total: int, message: str) -> None:
     print(f"[шаг {step}/{total}] {message}")
 
 
-def _dependency_preflight(venv_python: Path, project_root: Path, constraints_path: Path) -> bool:
+def _dependency_preflight(
+    venv_python: Path,
+    project_root: Path,
+    constraints_path: Path,
+    install_target: str,
+) -> bool:
     """Проверяет заранее, что зафиксированные версии можно разрешить без конфликтов."""
     check_cmd = [
         str(venv_python),
@@ -33,7 +40,7 @@ def _dependency_preflight(venv_python: Path, project_root: Path, constraints_pat
         "--dry-run",
         "-c",
         str(constraints_path),
-        ".",
+        install_target,
     ]
     result = subprocess.run(check_cmd, cwd=project_root, capture_output=True, text=True, check=False)
     if result.returncode == 0:
@@ -55,11 +62,41 @@ def _dependency_preflight(venv_python: Path, project_root: Path, constraints_pat
     return False
 
 
+
+
+def _select_install_target(args: argparse.Namespace) -> tuple[str, str]:
+    if args.autosync:
+        return ".[autosync]", "base + autosync"
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return ".", "base"
+
+    print("Выберите режим установки:")
+    print("  1) base (быстрее, без автосинхронизации)")
+    print("  2) base + autosync (WhisperX/Librosa/Demucs, установка дольше)")
+
+    while True:
+        choice = input("Введите 1 или 2 (Enter = 1): ").strip()
+        if choice in {"", "1"}:
+            return ".", "base"
+        if choice == "2":
+            return ".[autosync]", "base + autosync"
+        print("Неверный ввод. Укажите 1 или 2.")
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Bootstrap окружения для Lyrics Video Generator")
+    parser.add_argument(
+        "--autosync",
+        action="store_true",
+        help="Установить extra-зависимости для автосинхронизации",
+    )
+    args = parser.parse_args()
+
     total_steps = 4
     project_root = _project_root()
     venv_dir = project_root / ".venv"
     constraints_path = project_root / "constraints.txt"
+    install_target, mode_label = _select_install_target(args)
 
     try:
         _print_step(1, total_steps, "Проверка виртуального окружения (.venv)")
@@ -84,12 +121,18 @@ def main() -> int:
             cwd=project_root,
         )
 
+        print(f"ℹ️ Режим установки: {mode_label}.")
+        if install_target == ".[autosync]":
+            print("ℹ️ Включён autosync: установка может занять больше времени из-за дополнительных зависимостей.")
+        else:
+            print("ℹ️ Позже можно добавить autosync командой: python -m bootstrap --autosync")
+
         _print_step(3, total_steps, "Preflight-проверка зависимостей (constraints)")
-        if not _dependency_preflight(venv_python, project_root, constraints_path):
+        if not _dependency_preflight(venv_python, project_root, constraints_path, install_target):
             return 1
 
         subprocess.run(
-            [str(venv_python), "-m", "pip", "install", "-c", str(constraints_path), "."],
+            [str(venv_python), "-m", "pip", "install", install_target, "-c", str(constraints_path)],
             check=True,
             cwd=project_root,
         )
