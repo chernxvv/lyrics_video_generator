@@ -118,3 +118,65 @@ def test_get_missing_autosync_packages_reports_unavailable(monkeypatch: pytest.M
 
     missing = get_missing_autosync_packages()
     assert "whisperx" in missing
+
+
+
+def test_auto_sync_librosa_returns_aligned_lines_with_mocked_librosa(monkeypatch: pytest.MonkeyPatch) -> None:
+    import numpy as np
+
+    class FakeEffects:
+        @staticmethod
+        def hpss(y):
+            return y, y
+
+        @staticmethod
+        def split(_y, top_db=26):
+            return np.array([[1000, 3000], [6000, 8000]], dtype=np.int64)
+
+    class FakeOnset:
+        @staticmethod
+        def onset_strength(**_kwargs):
+            return np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        @staticmethod
+        def onset_detect(**_kwargs):
+            return np.array([1, 5, 9], dtype=np.int64)
+
+    class FakeLibrosa:
+        effects = FakeEffects
+        onset = FakeOnset
+
+        @staticmethod
+        def load(_path, sr=22050, mono=True):
+            return np.ones(22050, dtype=np.float32), sr
+
+        @staticmethod
+        def get_duration(y, sr):
+            return float(len(y) / sr)
+
+        @staticmethod
+        def frames_to_time(frames, sr):
+            return np.array(frames, dtype=np.float32) / float(sr)
+
+    import core.auto_sync as mod
+
+    monkeypatch.setitem(sys.modules, "librosa", FakeLibrosa)
+    result = mod._auto_sync_librosa("fake.wav", ["first line", "second line"])  # noqa: SLF001
+
+    assert len(result) == 2
+    assert result[0].text == "first line"
+    assert result[1].text == "second line"
+
+
+def test_auto_sync_librosa_raises_on_analysis_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeLibrosa:
+        @staticmethod
+        def load(*_args, **_kwargs):
+            raise RuntimeError("broken")
+
+    import core.auto_sync as mod
+
+    monkeypatch.setitem(sys.modules, "librosa", FakeLibrosa)
+
+    with pytest.raises(AutoSyncError, match="Ошибка анализа аудио librosa"):
+        mod._auto_sync_librosa("fake.wav", ["line 1", "line 2"])  # noqa: SLF001
