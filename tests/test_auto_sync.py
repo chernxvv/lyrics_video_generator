@@ -1,0 +1,182 @@
+from pathlib import Path
+import sys
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from core.auto_sync import AutoSyncError, _split_lyrics_text, auto_sync_lyrics
+from models import LyricLine
+
+
+def test_split_lyrics_text_strips_and_ignores_empty_lines() -> None:
+    source = "\n first line \n\n  second line\n   \nthird line  "
+
+    assert _split_lyrics_text(source) == ["first line", "second line", "third line"]
+
+
+def test_auto_sync_lyrics_rejects_single_non_empty_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("core.auto_sync.get_missing_autosync_packages", lambda: [])
+
+    with pytest.raises(AutoSyncError, match="минимум 2 непустые строки"):
+        auto_sync_lyrics("fake.wav", "only one line")
+
+
+def test_auto_sync_lyrics_falls_back_to_librosa_when_whisperx_backend_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = [
+        LyricLine(start_time="00:01.00", text="line 1"),
+        LyricLine(start_time="00:02.00", text="line 2"),
+    ]
+    monkeypatch.setattr("core.auto_sync.get_missing_autosync_packages", lambda: [])
+    monkeypatch.setattr(
+        "core.auto_sync._auto_sync_whisperx_word_level",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AutoSyncError("whisperx unavailable")),
+    )
+    monkeypatch.setattr("core.auto_sync._auto_sync_librosa", lambda *_args, **_kwargs: expected)
+
+    result = auto_sync_lyrics("fake.wav", "line 1\nline 2")
+
+    assert result == expected
+
+
+def test_auto_sync_lyrics_reports_missing_optional_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("core.auto_sync.get_missing_autosync_packages", lambda: ["whisperx", "demucs"])
+
+    with pytest.raises(AutoSyncError, match="optional-зависимости"):
+        auto_sync_lyrics("fake.wav", "line 1\nline 2")
+
+
+
+def test_auto_sync_lyrics_rejects_blank_full_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("core.auto_sync.get_missing_autosync_packages", lambda: [])
+
+    with pytest.raises(AutoSyncError, match="Текст трека пуст"):
+        auto_sync_lyrics("fake.wav", "   \n\t")
+
+
+def test_build_dependency_error_contains_package_list() -> None:
+    from core.auto_sync import build_autosync_dependency_error
+
+    message = build_autosync_dependency_error(["whisperx", "demucs"])
+    assert "whisperx, demucs" in message
+    assert "requirements-autosync.txt" in message
+
+
+def test_format_mmss_rounding_and_non_negative() -> None:
+    from core.auto_sync import _format_mmss
+
+    assert _format_mmss(-1.0) == "00:00.00"
+    assert _format_mmss(61.239) == "01:01.24"
+
+
+def test_guess_language_code_detects_russian_and_english() -> None:
+    from core.auto_sync import _guess_language_code
+
+    assert _guess_language_code(["Привет мир"]) == "ru"
+    assert _guess_language_code(["hello world"]) == "en"
+
+
+def test_extract_words_and_segments_handles_missing_fields() -> None:
+    from core.auto_sync import _extract_words_and_segments
+
+    aligned = {
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 1.0,
+                "text": "Hello",
+                "words": [{"text": "Hello", "start": 0.0, "end": 0.5}],
+            },
+            {
+                "start": 1.0,
+                "end": 2.0,
+                "text": None,
+                "words": [{"word": "world", "start": 1.1, "end": 1.5, "score": 0.9}],
+            },
+        ]
+    }
+    words, segments = _extract_words_and_segments(aligned)
+    assert words[0]["word"] == "Hello"
+    assert words[1]["word"] == "world"
+    assert segments[1]["text"] == ""
+
+
+def test_get_missing_autosync_packages_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    import builtins
+    from core.auto_sync import get_missing_autosync_packages
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "whisperx":
+            raise ImportError("no whisperx")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    missing = get_missing_autosync_packages()
+    assert "whisperx" in missing
+
+
+
+def test_auto_sync_librosa_returns_aligned_lines_with_mocked_librosa(monkeypatch: pytest.MonkeyPatch) -> None:
+    import numpy as np
+
+    class FakeEffects:
+        @staticmethod
+        def hpss(y):
+            return y, y
+
+        @staticmethod
+        def split(_y, top_db=26):
+            return np.array([[1000, 3000], [6000, 8000]], dtype=np.int64)
+
+    class FakeOnset:
+        @staticmethod
+        def onset_strength(**_kwargs):
+            return np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        @staticmethod
+        def onset_detect(**_kwargs):
+            return np.array([1, 5, 9], dtype=np.int64)
+
+    class FakeLibrosa:
+        effects = FakeEffects
+        onset = FakeOnset
+
+        @staticmethod
+        def load(_path, sr=22050, mono=True):
+            return np.ones(22050, dtype=np.float32), sr
+
+        @staticmethod
+        def get_duration(y, sr):
+            return float(len(y) / sr)
+
+        @staticmethod
+        def frames_to_time(frames, sr):
+            return np.array(frames, dtype=np.float32) / float(sr)
+
+    import core.auto_sync as mod
+
+    monkeypatch.setitem(sys.modules, "librosa", FakeLibrosa)
+    result = mod._auto_sync_librosa("fake.wav", ["first line", "second line"])  # noqa: SLF001
+
+    assert len(result) == 2
+    assert result[0].text == "first line"
+    assert result[1].text == "second line"
+
+
+def test_auto_sync_librosa_raises_on_analysis_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeLibrosa:
+        @staticmethod
+        def load(*_args, **_kwargs):
+            raise RuntimeError("broken")
+
+    import core.auto_sync as mod
+
+    monkeypatch.setitem(sys.modules, "librosa", FakeLibrosa)
+
+    with pytest.raises(AutoSyncError, match="Ошибка анализа аудио librosa"):
+        mod._auto_sync_librosa("fake.wav", ["line 1", "line 2"])  # noqa: SLF001
