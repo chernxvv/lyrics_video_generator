@@ -50,7 +50,7 @@ https://github.com/user-attachments/assets/130ea04b-9a82-4d6d-97f0-3f9bb9726ef9
 
 ### GUI
 
-![GUI screenshot](docs/images/gui-main-window.png)
+![GUI screenshot](https://github.com/user-attachments/assets/56ff56ba-6351-420f-a054-1b7b7ff76f5f)
 
 1. Выберите аудиофайл и изображение обложки.
 2. Заполните метаданные трека.
