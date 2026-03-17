@@ -2,16 +2,15 @@
 
 Lyrics Video Generator — это desktop GUI-приложение на PySide6 для сборки lyric-video из аудиотрека, обложки и текста. Проект ориентирован на быстрый практический результат: можно работать полностью вручную или использовать auto-sync как стартовую точку с последующей ручной доводкой. Поддерживаются вертикальные и горизонтальные форматы, а также два визуальных режима фона.
 
-## Main features
+## Статус проекта
 
-- Desktop GUI workflow: загрузка аудио/обложки, ввод метаданных, настройка синхронизации и экспорт видео.
-- Две ориентации: `9:16` (vertical) и `16:9` (horizontal).
-- Два режима синхронизации: manual и auto-sync.
-- Два режима фона: `soft gradient` и `dynamic BPM background`.
-- Два режима рендера: `Preview` (быстрая проверка) и `Final` (финальный экспорт).
-- Запуск для обычного пользователя через `run.sh` (Linux/macOS) или `run.bat` (Windows).
+Public beta.
 
-## Quick start
+Базовый workflow уже пригоден для реальной работы: доступны ручная синхронизация, рендер, вертикальный и горизонтальный форматы, а также режимы фона.
+
+Auto-sync и BPM-reactive background работают, но в зависимости от трека, сложности микса и локального окружения могут требовать ручной доводки.
+
+## Быстрый запуск
 
 ### Linux/macOS
 
@@ -29,7 +28,29 @@ run.bat
 
 > В системе должны быть установлены `ffmpeg` и `ffprobe`.
 
-## How to use
+### Пример результата
+
+Vertical (`9:16`), Мягкий градиент, Preview:
+
+https://github.com/user-attachments/assets/fa433fc6-4416-468f-b608-8a1a7c47272a
+
+Vertical (`9:16`), Динамический BPM-фон, Preview:
+
+https://github.com/user-attachments/assets/cc044f30-a820-44f5-b851-3cf7c300c1fa
+
+Горизонтальная ориентация (`16:9`), Мягкий градиент, Preview:
+
+https://github.com/user-attachments/assets/79e4012c-45dd-4145-85e4-22393296b4d1
+
+Горизонтальная ориентация (`16:9`), Динамический BPM-фон, Preview:
+
+https://github.com/user-attachments/assets/130ea04b-9a82-4d6d-97f0-3f9bb9726ef9
+
+## Как использовать
+
+### GUI
+
+![GUI screenshot](docs/images/gui-main-window.png)
 
 1. Выберите аудиофайл и изображение обложки.
 2. Заполните метаданные трека.
@@ -39,20 +60,37 @@ run.bat
 4. Выберите ориентацию, режим фона и render mode (`Preview`/`Final`).
 5. Нажмите «Сгенерировать видео».
 
-## Limitations and quality expectations
+## Основные характеристики
+
+- Desktop GUI workflow: загрузка аудио/обложки, ввод метаданных, настройка синхронизации и экспорт видео.
+- Две ориентации: `9:16` (vertical) и `16:9` (horizontal).
+- Два режима синхронизации: manual и auto-sync.
+- Два режима фона: `soft gradient` и `dynamic BPM background`.
+- Два режима рендера: `Preview` (быстрая проверка) и `Final` (финальный экспорт).
+- Запуск для обычного пользователя через `run.sh` (Linux/macOS) или `run.bat` (Windows).
+
+## Минимальные системные ожидания
+
+- Python 3.11+.
+- В системе должны быть установлены `ffmpeg` и `ffprobe`, доступные через `PATH`.
+- Основные целевые среды — Windows и Linux.
+- NVIDIA GPU не обязателен: он используется только для ускорения кодирования через NVENC, если доступен.
+- Для auto-sync нужны дополнительные опциональные зависимости (`autosync` extras).
+
+## Ограничения и ожидания в отношении качества
 
 - Auto-sync — это usable baseline, а не идеальный alignment для всех треков.
 - На сложных/плотных миксах и нетипичном вокале возможны ошибки тайминга.
 - После авто-синхронизации обычно нужна ручная доводка.
 - Для полного auto-sync pipeline требуются дополнительные зависимости (`autosync` extras).
 
-## Full technical documentation
+## Полная техническая документация
 
 Полная техническая спецификация (архитектура, fallback-логика, производительность, GPU/NVENC, debug-export, benchmark и инженерные ограничения):
 
 - [SPECIFICATION.md](SPECIFICATION.md)
 
-## Project policies
+## Политика проекта
 
 - [Contributing guide](CONTRIBUTING.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
