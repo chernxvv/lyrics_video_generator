@@ -13,18 +13,18 @@ authors = [
   { name = "Roman Chernov", email = "romanchernovv@gmail.com" },
 ]
 dependencies = [
-  "PySide6>=6.7",
-  "Pillow>=10.0",
-  "numpy>=1.26",
-  "scikit-learn>=1.4",
+  "PySide6>=6.10,<7",
+  "Pillow>=10.4,<11",
+  "numpy>=2.4,<3",
+  "scikit-learn>=1.8,<2",
 ]
 
 [project.optional-dependencies]
 autosync = [
-  "librosa>=0.10",
-  "soundfile>=0.12",
-  "whisperx>=3.1",
-  "demucs>=4.0",
+  "librosa>=0.11,<0.12",
+  "soundfile>=0.13,<0.14",
+  "whisperx>=3.8,<4",
+  "demucs>=4.0.1,<5",
 ]
 
 [project.scripts]
