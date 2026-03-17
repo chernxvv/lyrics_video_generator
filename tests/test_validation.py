@@ -113,3 +113,15 @@ def test_validate_project_rejects_empty_lyric_text(tmp_path: Path, monkeypatch: 
 
     with pytest.raises(ValidationError, match="Текст строки не может быть пустым"):
         validate_project(project)
+
+
+
+def test_validate_project_success_returns_duration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = _base_project(tmp_path)
+    project.lyrics = [
+        LyricLine(start_time="00:05", text="line 1"),
+        LyricLine(start_time="00:15", text="line 2"),
+    ]
+    monkeypatch.setattr("core.validation.probe_audio_duration", lambda _: 120.0)
+
+    assert validate_project(project) == 120.0

@@ -18,6 +18,12 @@ from core.render import (
     _resolve_video_codec,
     _supports_encoder,
     _supports_filter,
+    _drawtext_style,
+    _load_font,
+    _measure_wrapped_height,
+    _scale_box,
+    _scale_value,
+    _wrap_text_by_pixel_width,
 )
 from models import RenderSettings
 
@@ -90,3 +96,39 @@ def test_escape_drawtext_escapes_special_characters() -> None:
     assert r"\:" in escaped
     assert r"\'" in escaped
     assert r"\%" in escaped
+
+
+
+def test_scale_helpers_behaviour() -> None:
+    assert _scale_value(10, 1.5) == 15
+    assert _scale_box((1, 2, 10, 20), 2.0) == (2, 4, 20, 40)
+
+
+def test_drawtext_style_requires_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("core.render.FONT_DIR", tmp_path)
+
+    with pytest.raises(RenderError, match="Не найден обязательный шрифт"):
+        _drawtext_style(24, "missing.ttf", bordered=True)
+
+
+def test_load_font_wraps_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    font_file = tmp_path / "NotoSerif-Regular.ttf"
+    font_file.write_bytes(b"not-a-real-font")
+    monkeypatch.setattr("core.render.FONT_DIR", tmp_path)
+
+    with pytest.raises(RenderError, match="Не удалось загрузить шрифт"):
+        _load_font(20, "NotoSerif-Regular.ttf")
+
+
+def test_wrap_and_measure_text_helpers() -> None:
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("RGBA", (300, 100), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+
+    lines = _wrap_text_by_pixel_width(draw, "one two three four five", font, max_width=40, stroke_width=0)
+    assert len(lines) >= 2
+
+    h = _measure_wrapped_height(draw, "one two three", 120, font, stroke_width=0, line_gap=4)
+    assert h > 0

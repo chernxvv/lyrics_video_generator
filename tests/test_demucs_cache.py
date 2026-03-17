@@ -113,3 +113,44 @@ def test_demucs_cache_dir_for_audio_is_stable_for_same_file(tmp_path: Path) -> N
 
     assert p1 == p2
     assert "lvg_demucs_cache" in str(p1)
+
+
+
+def test_ensure_demucs_stems_cached_uses_cached_fallback_after_failed_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    audio = tmp_path / "song.mp3"
+    audio.write_bytes(b"a")
+    cache_dir = tmp_path / "cache"
+
+    # Есть кэш только из неподходящей модели -> initial check не возвращает, но fallback в конце должен сработать.
+    fallback_dir = cache_dir / "some_other_model" / audio.stem
+    _write_stem(fallback_dir, "vocals")
+    _write_stem(fallback_dir, "drums")
+
+    monkeypatch.setattr("core.demucs_cache.shutil.which", lambda _: "/usr/bin/demucs")
+    monkeypatch.setattr("core.demucs_cache.demucs_cache_dir_for_audio", lambda _p: cache_dir)
+    monkeypatch.setattr(
+        "core.demucs_cache.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stderr="demucs failed", stdout=""),
+    )
+
+    result = ensure_demucs_stems_cached(str(audio), preferred_models=("htdemucs_6s",))
+
+    assert result.reused is True
+    assert result.model_name == "some_other_model"
+
+
+def test_ensure_demucs_stems_cached_raises_when_no_valid_stems_created(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    audio = tmp_path / "song.mp3"
+    audio.write_bytes(b"a")
+    cache_dir = tmp_path / "cache"
+
+    def fake_run(cmd, **kwargs):
+        # Возвращаем успешный код, но не создаём пригодные stems -> ветка last_err = "Demucs завершился без пригодных stem-файлов"
+        return SimpleNamespace(returncode=0, stderr="", stdout="ok")
+
+    monkeypatch.setattr("core.demucs_cache.shutil.which", lambda _: "/usr/bin/demucs")
+    monkeypatch.setattr("core.demucs_cache.demucs_cache_dir_for_audio", lambda _p: cache_dir)
+    monkeypatch.setattr("core.demucs_cache.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="без пригодных stem-файлов"):
+        ensure_demucs_stems_cached(str(audio), preferred_models=("htdemucs_6s",))
