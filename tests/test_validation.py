@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.validation import ValidationError, validate_project
+from core.validation import DependencyError, ValidationError, validate_project
 from models import LyricLine, ProjectData
 
 
@@ -68,4 +68,48 @@ def test_validate_project_auto_mode_requires_full_text_when_not_autofilled(tmp_p
     project.auto_sync_audio_path = ""
 
     with pytest.raises(ValidationError, match="В режиме автосинхронизации нужно вставить полный текст трека"):
+        validate_project(project)
+
+
+
+def test_validate_project_rejects_missing_audio_file(tmp_path: Path) -> None:
+    project = _base_project(tmp_path)
+    project.audio_path = tmp_path / "absent.mp3"
+
+    with pytest.raises(ValidationError, match="Выберите существующий аудиофайл"):
+        validate_project(project)
+
+
+def test_validate_project_rejects_missing_image_file(tmp_path: Path) -> None:
+    project = _base_project(tmp_path)
+    project.image_path = tmp_path / "absent.jpg"
+
+    with pytest.raises(ValidationError, match="Выберите существующее изображение"):
+        validate_project(project)
+
+
+def test_validate_project_rejects_when_lyrics_list_empty(tmp_path: Path) -> None:
+    project = _base_project(tmp_path)
+    project.lyrics = []
+
+    with pytest.raises(ValidationError, match="Добавьте хотя бы одну строку текста"):
+        validate_project(project)
+
+
+def test_validate_project_maps_audio_errors_to_dependency_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from core.audio import AudioError
+
+    project = _base_project(tmp_path)
+    monkeypatch.setattr("core.validation.probe_audio_duration", lambda *_args: (_ for _ in ()).throw(AudioError("ffprobe missing")))
+
+    with pytest.raises(DependencyError, match="ffprobe missing"):
+        validate_project(project)
+
+
+def test_validate_project_rejects_empty_lyric_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = _base_project(tmp_path)
+    project.lyrics = [LyricLine(start_time="00:10", text="   ")]
+    monkeypatch.setattr("core.validation.probe_audio_duration", lambda _: 120.0)
+
+    with pytest.raises(ValidationError, match="Текст строки не может быть пустым"):
         validate_project(project)
