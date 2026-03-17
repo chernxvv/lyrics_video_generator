@@ -29,6 +29,7 @@ autosync = [
 
 [project.scripts]
 lyrics-video-generator = "main:main"
+lyrics-video-generator-bootstrap = "bootstrap:main"
 
 [tool.setuptools.packages.find]
 include = ["core*", "gui*", "models*"]
