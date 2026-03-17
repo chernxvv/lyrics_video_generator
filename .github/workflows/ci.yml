@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile Python sources
+        run: python -m compileall .
+
+      - name: Run tests
+        run: pytest
+
+  autosync-optional:
+    name: Autosync optional checks (Python 3.11)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install base dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install autosync optional dependencies
+        run: pip install -r requirements-autosync.txt
+
+      - name: Compile Python sources
+        run: python -m compileall .
+
+      - name: Run autosync-related tests subset
+        run: pytest tests/test_auto_sync.py tests/test_demucs_cache.py
