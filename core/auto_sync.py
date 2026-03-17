@@ -42,6 +42,29 @@ class AutoSyncError(RuntimeError):
     pass
 
 
+OPTIONAL_AUTOSYNC_PACKAGES = ("librosa", "soundfile", "whisperx", "demucs")
+
+
+def get_missing_autosync_packages() -> list[str]:
+    missing: list[str] = []
+    for module_name in OPTIONAL_AUTOSYNC_PACKAGES:
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing.append(module_name)
+    return missing
+
+
+def build_autosync_dependency_error(missing_packages: list[str]) -> str:
+    packages = ", ".join(missing_packages)
+    return (
+        "Автосинхронизация требует optional-зависимости, которые не установлены: "
+        f"{packages}.\n\n"
+        "Установите их командой:\n"
+        "pip install -r requirements-autosync.txt"
+    )
+
+
 def _split_lyrics_text(full_text: str) -> list[str]:
     lines = [line.strip() for line in full_text.splitlines()]
     return [line for line in lines if line]
@@ -266,6 +289,10 @@ def _auto_sync_librosa(audio_path: str, lines: list[str]) -> list[LyricLine]:
 
 
 def auto_sync_lyrics(audio_path: str, full_lyrics_text: str) -> list[LyricLine]:
+    missing_packages = get_missing_autosync_packages()
+    if missing_packages:
+        raise AutoSyncError(build_autosync_dependency_error(missing_packages))
+
     logger.info("Автосинхронизация: запуск")
     started = time.perf_counter()
 

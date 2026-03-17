@@ -41,7 +41,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.auto_sync import AutoSyncError, auto_sync_lyrics
+from core.auto_sync import (
+    AutoSyncError,
+    auto_sync_lyrics,
+    build_autosync_dependency_error,
+    get_missing_autosync_packages,
+)
 from core.image_analysis import extract_dominant_palette
 from core.render import RenderDependencyError, RenderError, render_video
 from core.validation import DependencyError, ValidationError, validate_project
@@ -370,6 +375,16 @@ class MainWindow(QMainWindow):
         full_text = self.auto_text.toPlainText().strip()
         if not full_text:
             QMessageBox.warning(self, "Автосинхронизация", "Введите полный текст трека.")
+            return
+
+        missing_packages = get_missing_autosync_packages()
+        if missing_packages:
+            QMessageBox.information(
+                self,
+                "Автосинхронизация",
+                build_autosync_dependency_error(missing_packages),
+            )
+            self.status_label.setText("Автосинхронизация: установите optional-зависимости")
             return
 
         self.auto_sync_btn.setEnabled(False)

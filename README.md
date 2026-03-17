@@ -35,10 +35,24 @@ Desktop GUI-приложение (PySide6) для генерации lyric-video
 
 ## Установка
 
+### Быстрый старт (base)
+
+Минимальный набор для GUI и базового рендера (ручная синхронизация):
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+### Полный функционал (full)
+
+Добавляет optional-зависимости для автосинхронизации текста (WhisperX/Librosa/Demucs):
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt -r requirements-autosync.txt
 ```
 
 Также в системе должны быть установлены `ffmpeg` и `ffprobe`.
@@ -238,10 +252,15 @@ python -m compileall .
 
 ## Зависимости
 
+### Base (`requirements.txt`)
+
 - `PySide6`
 - `Pillow`
 - `numpy`
 - `scikit-learn`
+
+### Optional AutoSync (`requirements-autosync.txt`)
+
 - `librosa`
 - `soundfile`
 - `whisperx`
