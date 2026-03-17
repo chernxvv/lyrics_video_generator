@@ -2,6 +2,12 @@
 
 Desktop GUI-приложение (PySide6) для генерации lyric-video по аудиотреку.
 
+## Документация для участников
+
+- [Contributing guide](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security policy](SECURITY.md)
+
 ## Что поддерживается сейчас
 
 - Две ориентации видео: `9:16` (vertical) и `16:9` (horizontal).
