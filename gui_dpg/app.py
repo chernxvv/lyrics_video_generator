@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
+import numpy as np
+from PIL import Image, ImageDraw
 
 from core.auto_sync import (
     AutoSyncError,
@@ -34,6 +36,9 @@ class DPGApplication:
         self._timeline_drag_active = False
         self._timeline_dirty = True
         self._last_preview_render_at = 0.0
+        self._timeline_texture_tag = "timeline_texture"
+        self._timeline_width = 1100
+        self._timeline_height = 280
 
     def log(self, message: str) -> None:
         logger.info(message)
@@ -56,6 +61,7 @@ class DPGApplication:
         dpg.bind_theme(theme.build_theme())
         self._bind_default_font()
         ensure_preview_texture(self.state.preview.texture_tag, self.state.preview.width, self.state.preview.height)
+        self._ensure_timeline_texture()
         with dpg.window(tag="root_window", label="Lyrics Video Generator", width=1660, height=930):
             layout.build_toolbar(self)
             dpg.add_separator()
@@ -137,8 +143,7 @@ class DPGApplication:
         dpg.add_separator()
         dpg.add_text("Timeline")
         dpg.add_text("Click to seek. Drag lyric blocks horizontally to retime.")
-        with dpg.drawlist(width=-1, height=280, tag="timeline_drawlist"):
-            pass
+        dpg.add_image(self._timeline_texture_tag, tag="timeline_image")
 
     def build_right_panel(self) -> None:
         with dpg.group(horizontal=True):
@@ -165,6 +170,13 @@ class DPGApplication:
         with dpg.group(horizontal=True):
             dpg.add_button(label="Add line", callback=self.add_line)
             dpg.add_button(label="Delete line", callback=self.delete_selected_line)
+
+    def _ensure_timeline_texture(self) -> None:
+        if dpg.does_item_exist(self._timeline_texture_tag):
+            return
+        data = np.zeros((self._timeline_height, self._timeline_width, 4), dtype=np.float32)
+        with dpg.texture_registry(show=False):
+            dpg.add_dynamic_texture(self._timeline_width, self._timeline_height, data.flatten().tolist(), tag=self._timeline_texture_tag)
 
     def _bind_default_font(self) -> None:
         font_path = Path(__file__).resolve().parent.parent / "assets" / "fonts" / "NotoSans-Regular.ttf"
@@ -441,62 +453,70 @@ class DPGApplication:
             self.set_status("Error", f"Waveform failed: {exc}")
 
     def redraw_timeline(self) -> None:
-        if not dpg.does_item_exist("timeline_drawlist"):
+        if not dpg.does_item_exist(self._timeline_texture_tag):
             return
-        dpg.delete_item("timeline_drawlist", children_only=True)
-        width = dpg.get_item_rect_size("timeline_drawlist")[0] or 900
-        height = dpg.get_item_rect_size("timeline_drawlist")[1] or 280
+        width = self._timeline_width
+        height = self._timeline_height
         duration = max(self._project_duration(), 1.0)
         zoom = max(self.state.zoom_level, 0.2)
         visible_duration = max(5.0, duration / zoom)
         scroll = min(self.state.timeline_scroll, max(0.0, duration - visible_duration))
         self.state.timeline_scroll = scroll
-        pmin = [0, 0]
-        pmax = [width, height]
-        dpg.draw_rectangle(pmin, pmax, fill=(25, 29, 36, 255), color=(80, 90, 110, 255), parent="timeline_drawlist")
+
+        image = Image.new("RGBA", (width, height), (25, 29, 36, 255))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, width - 1, height - 1), outline=(80, 90, 110, 255), width=1)
+
         wf_top = 24
         wf_bottom = 120
         if self.state.waveform.ready and self.state.waveform.samples:
             samples = self.state.waveform.samples
             step = visible_duration / width
-            for x in range(int(width)):
+            for x in range(width):
                 t = scroll + x * step
                 idx = min(len(samples) - 1, max(0, int((t / duration) * len(samples))))
                 amp = samples[idx]
                 y_mid = (wf_top + wf_bottom) / 2
                 half = amp * ((wf_bottom - wf_top) / 2)
-                dpg.draw_line((x, y_mid - half), (x, y_mid + half), color=(110, 181, 255, 180), parent="timeline_drawlist")
+                draw.line((x, y_mid - half, x, y_mid + half), fill=(110, 181, 255, 220), width=1)
+
         for sec in range(int(scroll), int(scroll + visible_duration) + 1):
-            x = (sec - scroll) / visible_duration * width
-            dpg.draw_line((x, 0), (x, height), color=(58, 63, 74, 140), parent="timeline_drawlist")
-            dpg.draw_text((x + 4, 4), self._format_time(sec), size=12, color=(210, 210, 220, 180), parent="timeline_drawlist")
+            x = int((sec - scroll) / visible_duration * width)
+            draw.line((x, 0, x, height), fill=(58, 63, 74, 140), width=1)
+            draw.text((x + 4, 4), self._format_time(sec), fill=(210, 210, 220, 220))
+
         track_y1, track_y2 = 150, 220
         for index, line in enumerate(self.state.project.lyrics):
-            start = self._parse_time(line.start_time)
+            start_time = self._parse_time(line.start_time)
             if index + 1 < len(self.state.project.lyrics):
-                end = self._parse_time(self.state.project.lyrics[index + 1].start_time)
+                end_time = self._parse_time(self.state.project.lyrics[index + 1].start_time)
             else:
-                end = min(duration, start + 3.0)
-            end = max(start + 0.2, end)
-            if end < scroll or start > scroll + visible_duration:
+                end_time = min(duration, start_time + 3.0)
+            end_time = max(start_time + 0.2, end_time)
+            if end_time < scroll or start_time > scroll + visible_duration:
                 continue
-            x1 = max(0.0, (start - scroll) / visible_duration * width)
-            x2 = min(width, (end - scroll) / visible_duration * width)
-            fill = (91, 133, 190, 255) if index == self.state.selected_line_index else (66, 93, 125, 220)
-            dpg.draw_rectangle((x1, track_y1), (x2, track_y2), fill=fill, color=(190, 200, 215, 255), parent="timeline_drawlist")
-            dpg.draw_text((x1 + 6, track_y1 + 10), line.text[:30], size=14, color=(255, 255, 255, 255), parent="timeline_drawlist")
-        play_x = (self.state.playback_position - scroll) / visible_duration * width
-        dpg.draw_line((play_x, 0), (play_x, height), color=(255, 190, 64, 255), thickness=2, parent="timeline_drawlist")
-        if not dpg.does_item_exist("timeline_handlers"):
+            x1 = max(0, int((start_time - scroll) / visible_duration * width))
+            x2 = min(width - 1, int((end_time - scroll) / visible_duration * width))
+            fill = (91, 133, 190, 255) if index == self.state.selected_line_index else (66, 93, 125, 230)
+            draw.rounded_rectangle((x1, track_y1, max(x1 + 8, x2), track_y2), radius=8, fill=fill, outline=(190, 200, 215, 255), width=1)
+            draw.text((x1 + 8, track_y1 + 12), line.text[:36], fill=(255, 255, 255, 255))
+
+        play_x = int((self.state.playback_position - scroll) / visible_duration * width)
+        draw.line((play_x, 0, play_x, height), fill=(255, 190, 64, 255), width=2)
+
+        np_image = np.array(image, dtype=np.uint8)
+        dpg.set_value(self._timeline_texture_tag, (np_image.astype(np.float32) / 255.0).flatten().tolist())
+
+        if dpg.does_item_exist("timeline_image") and not dpg.does_item_exist("timeline_handlers"):
             with dpg.item_handler_registry(tag="timeline_handlers"):
                 dpg.add_item_clicked_handler(callback=self._on_timeline_click)
                 dpg.add_item_double_clicked_handler(callback=self._on_timeline_double_click)
-        dpg.bind_item_handler_registry("timeline_drawlist", "timeline_handlers")
+            dpg.bind_item_handler_registry("timeline_image", "timeline_handlers")
 
     def _update_timeline_interaction(self) -> None:
-        if not dpg.does_item_exist("timeline_drawlist"):
+        if not dpg.does_item_exist("timeline_image"):
             return
-        hovered = dpg.is_item_hovered("timeline_drawlist") if hasattr(dpg, "is_item_hovered") else False
+        hovered = dpg.is_item_hovered("timeline_image") if hasattr(dpg, "is_item_hovered") else False
         mouse_down = dpg.is_mouse_button_down(0) if hasattr(dpg, "is_mouse_button_down") else False
         if hovered and mouse_down and self._timeline_drag_index is not None:
             self._timeline_drag_active = True
@@ -514,8 +534,8 @@ class DPGApplication:
 
     def _seek_or_select_from_mouse(self, select: bool) -> None:
         mouse = dpg.get_mouse_pos(local=False)
-        origin = dpg.get_item_rect_min("timeline_drawlist")
-        size = dpg.get_item_rect_size("timeline_drawlist")
+        origin = dpg.get_item_rect_min("timeline_image")
+        size = dpg.get_item_rect_size("timeline_image")
         width = size[0] or 1
         duration = max(self._project_duration(), 1.0)
         visible = max(5.0, duration / max(self.state.zoom_level, 0.2))
@@ -531,8 +551,8 @@ class DPGApplication:
 
     def _line_index_at_mouse(self) -> int | None:
         mouse = dpg.get_mouse_pos(local=False)
-        origin = dpg.get_item_rect_min("timeline_drawlist")
-        size = dpg.get_item_rect_size("timeline_drawlist")
+        origin = dpg.get_item_rect_min("timeline_image")
+        size = dpg.get_item_rect_size("timeline_image")
         width = size[0] or 1
         y = mouse[1] - origin[1]
         if not (150 <= y <= 220):
@@ -555,8 +575,8 @@ class DPGApplication:
         if index is None:
             return
         mouse = dpg.get_mouse_pos(local=False)
-        origin = dpg.get_item_rect_min("timeline_drawlist")
-        size = dpg.get_item_rect_size("timeline_drawlist")
+        origin = dpg.get_item_rect_min("timeline_image")
+        size = dpg.get_item_rect_size("timeline_image")
         width = size[0] or 1
         duration = max(self._project_duration(), 1.0)
         visible = max(5.0, duration / max(self.state.zoom_level, 0.2))
