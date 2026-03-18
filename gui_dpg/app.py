@@ -37,8 +37,9 @@ class DPGApplication:
         self._timeline_dirty = True
         self._last_preview_render_at = 0.0
         self._timeline_texture_tag = "timeline_texture"
-        self._timeline_width = 1100
-        self._timeline_height = 280
+        self._timeline_width = 900
+        self._timeline_height = 240
+        self._last_timeline_render_at = 0.0
 
     def log(self, message: str) -> None:
         logger.info(message)
@@ -60,7 +61,7 @@ class DPGApplication:
         dpg.configure_app(docking=True, docking_space=True)
         dpg.bind_theme(theme.build_theme())
         self._bind_default_font()
-        ensure_preview_texture(self.state.preview.texture_tag, self.state.preview.width, self.state.preview.height)
+        self._sync_preview_geometry()
         self._ensure_timeline_texture()
         with dpg.window(tag="root_window", label="Lyrics Video Generator", width=1660, height=930):
             layout.build_toolbar(self)
@@ -178,6 +179,16 @@ class DPGApplication:
         with dpg.texture_registry(show=False):
             dpg.add_dynamic_texture(self._timeline_width, self._timeline_height, data.flatten().tolist(), tag=self._timeline_texture_tag)
 
+    def _sync_preview_geometry(self) -> None:
+        orientation = self.state.project.orientation
+        target_size = (320, 568) if orientation == "vertical" else (568, 320)
+        if (self.state.preview.width, self.state.preview.height) == target_size and dpg.does_item_exist(self.state.preview.texture_tag):
+            return
+        self.state.preview.width, self.state.preview.height = target_size
+        if dpg.does_item_exist(self.state.preview.texture_tag):
+            dpg.delete_item(self.state.preview.texture_tag)
+        ensure_preview_texture(self.state.preview.texture_tag, self.state.preview.width, self.state.preview.height)
+
     def _bind_default_font(self) -> None:
         font_path = Path(__file__).resolve().parent.parent / "assets" / "fonts" / "NotoSans-Regular.ttf"
         if not font_path.exists():
@@ -215,7 +226,8 @@ class DPGApplication:
             return
         self.state.project.image_path = path
         self.sync_ui_from_project()
-        self.refresh_preview()
+        self.state.preview.dirty = True
+        self._last_preview_render_at = 0.0
         self.set_status("Ready", f"Cover imported: {path.name}")
 
     def pick_lyrics(self, *args) -> None:
@@ -256,6 +268,7 @@ class DPGApplication:
         p.title = dpg.get_value("title") or ""
         p.release_date = dpg.get_value("release_date") or ""
         p.orientation = "vertical" if dpg.get_value("orientation") == "9:16" else "horizontal"
+        self._sync_preview_geometry()
         p.background_mode = dpg.get_value("background_mode")
         p.sync_mode = dpg.get_value("sync_mode")
         self.state.render_settings.thread_count = max(1, int(dpg.get_value("thread_count") or 1))
@@ -276,6 +289,7 @@ class DPGApplication:
     def on_settings_changed(self, *args) -> None:
         self.sync_project_from_ui()
         self.state.preview.dirty = True
+        self._last_preview_render_at = 0.0
         self._timeline_dirty = True
 
     def on_zoom_changed(self, *args) -> None:
@@ -426,7 +440,7 @@ class DPGApplication:
         if not force and not self.state.preview.dirty:
             return
         now = time.perf_counter()
-        if not force and (now - self._last_preview_render_at) < 0.04:
+        if not force and (now - self._last_preview_render_at) < 0.10:
             return
         try:
             self.sync_project_from_ui()
@@ -468,7 +482,7 @@ class DPGApplication:
         draw.rectangle((0, 0, width - 1, height - 1), outline=(80, 90, 110, 255), width=1)
 
         wf_top = 24
-        wf_bottom = 120
+        wf_bottom = 96
         if self.state.waveform.ready and self.state.waveform.samples:
             samples = self.state.waveform.samples
             step = visible_duration / width
@@ -485,7 +499,7 @@ class DPGApplication:
             draw.line((x, 0, x, height), fill=(58, 63, 74, 140), width=1)
             draw.text((x + 4, 4), self._format_time(sec), fill=(210, 210, 220, 220))
 
-        track_y1, track_y2 = 150, 220
+        track_y1, track_y2 = 126, 206
         for index, line in enumerate(self.state.project.lyrics):
             start_time = self._parse_time(line.start_time)
             if index + 1 < len(self.state.project.lyrics):
@@ -506,6 +520,7 @@ class DPGApplication:
 
         np_image = np.array(image, dtype=np.uint8)
         dpg.set_value(self._timeline_texture_tag, (np_image.astype(np.float32) / 255.0).flatten().tolist())
+        self._last_timeline_render_at = time.perf_counter()
 
         if dpg.does_item_exist("timeline_image") and not dpg.does_item_exist("timeline_handlers"):
             with dpg.item_handler_registry(tag="timeline_handlers"):
@@ -555,7 +570,7 @@ class DPGApplication:
         size = dpg.get_item_rect_size("timeline_image")
         width = size[0] or 1
         y = mouse[1] - origin[1]
-        if not (150 <= y <= 220):
+        if not (126 <= y <= 206):
             return None
         duration = max(self._project_duration(), 1.0)
         visible = max(5.0, duration / max(self.state.zoom_level, 0.2))
@@ -682,7 +697,7 @@ class DPGApplication:
                 self._timeline_dirty = True
             last = now
             self._update_timeline_interaction()
-            if self._timeline_dirty:
+            if self._timeline_dirty and (now - self._last_timeline_render_at) >= 0.05:
                 self.redraw_timeline()
                 self._timeline_dirty = False
             self.refresh_preview()

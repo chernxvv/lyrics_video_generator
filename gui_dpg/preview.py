@@ -9,6 +9,9 @@ from core.image_analysis import extract_dominant_palette
 from core.render import compose_preview_frame
 from core.audio import probe_audio_duration
 
+_duration_cache: dict[str, float] = {}
+_palette_cache: dict[str, object] = {}
+
 
 def ensure_preview_texture(tag: str, width: int, height: int) -> None:
     if dpg.does_item_exist(tag):
@@ -22,8 +25,20 @@ def update_preview_texture(state) -> None:
     ensure_preview_texture(state.preview.texture_tag, state.preview.width, state.preview.height)
     image = None
     try:
-        duration = probe_audio_duration(Path(state.project.audio_path)) if state.project.audio_path else 0.0
-        palette = extract_dominant_palette(Path(state.project.image_path)) if state.project.image_path else None
+        duration = 0.0
+        if state.project.audio_path:
+            audio_key = str(state.project.audio_path)
+            duration = _duration_cache.get(audio_key)
+            if duration is None:
+                duration = probe_audio_duration(Path(state.project.audio_path))
+                _duration_cache[audio_key] = duration
+        palette = None
+        if state.project.image_path:
+            image_key = str(state.project.image_path)
+            palette = _palette_cache.get(image_key)
+            if palette is None:
+                palette = extract_dominant_palette(Path(state.project.image_path))
+                _palette_cache[image_key] = palette
         if palette is not None:
             image = compose_preview_frame(
                 state.project,
