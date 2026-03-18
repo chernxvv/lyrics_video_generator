@@ -848,32 +848,46 @@ class DPGApplication:
         self.sync_ui_from_project()
         self.refresh_all()
 
+    def _tick_frame(self) -> None:
+        now = time.perf_counter()
+        if self.state.transport_playing:
+            if self._audio_process is not None and self._audio_process.poll() is not None:
+                self.state.transport_playing = False
+                self._audio_process = None
+            self.state.playback_position = min(
+                self._project_duration(),
+                self._playback_start_position + (now - self._playback_anchor),
+            )
+            if self.state.playback_position >= self._project_duration():
+                self.state.transport_playing = False
+                self._stop_audio_playback()
+            self.state.preview.dirty = True
+            self._timeline_dirty = True
+        self._update_timeline_interaction()
+        if self._timeline_dirty and (now - self._last_timeline_render_at) >= 0.05:
+            self.redraw_timeline()
+            self._timeline_dirty = False
+        self.refresh_preview()
+
+    def _schedule_next_frame(self, sender=None, app_data=None) -> None:
+        if not dpg.is_dearpygui_running():
+            return
+        self._tick_frame()
+        if hasattr(dpg, "get_frame_count") and hasattr(dpg, "set_frame_callback"):
+            dpg.set_frame_callback(dpg.get_frame_count() + 1, self._schedule_next_frame)
+
     def run(self) -> None:
         self.build()
-        last = time.perf_counter()
-        while dpg.is_dearpygui_running():
-            now = time.perf_counter()
-            if self.state.transport_playing:
-                if self._audio_process is not None and self._audio_process.poll() is not None:
-                    self.state.transport_playing = False
-                    self._audio_process = None
-                self.state.playback_position = min(
-                    self._project_duration(),
-                    self._playback_start_position + (now - self._playback_anchor),
-                )
-                if self.state.playback_position >= self._project_duration():
-                    self.state.transport_playing = False
-                    self._stop_audio_playback()
-                self.state.preview.dirty = True
-                self._timeline_dirty = True
-            last = now
-            self._update_timeline_interaction()
-            if self._timeline_dirty and (now - self._last_timeline_render_at) >= 0.05:
-                self.redraw_timeline()
-                self._timeline_dirty = False
-            self.refresh_preview()
-            dpg.render_dearpygui_frame()
-        dpg.destroy_context()
+        try:
+            if hasattr(dpg, "set_frame_callback") and hasattr(dpg, "get_frame_count"):
+                dpg.set_frame_callback(1, self._schedule_next_frame)
+                dpg.start_dearpygui()
+            else:
+                while dpg.is_dearpygui_running():
+                    self._tick_frame()
+                    dpg.render_dearpygui_frame()
+        finally:
+            dpg.destroy_context()
 
     @staticmethod
     def _parse_time(value: str) -> float:
