@@ -180,13 +180,8 @@ class DPGApplication:
             dpg.add_dynamic_texture(self._timeline_width, self._timeline_height, data.flatten().tolist(), tag=self._timeline_texture_tag)
 
     def _sync_preview_geometry(self) -> None:
-        orientation = self.state.project.orientation
-        target_size = (320, 568) if orientation == "vertical" else (568, 320)
-        if (self.state.preview.width, self.state.preview.height) == target_size and dpg.does_item_exist(self.state.preview.texture_tag):
-            return
-        self.state.preview.width, self.state.preview.height = target_size
-        if dpg.does_item_exist(self.state.preview.texture_tag):
-            dpg.delete_item(self.state.preview.texture_tag)
+        self.state.preview.width = 568
+        self.state.preview.height = 568
         ensure_preview_texture(self.state.preview.texture_tag, self.state.preview.width, self.state.preview.height)
 
     def _bind_default_font(self) -> None:

@@ -40,13 +40,14 @@ def update_preview_texture(state) -> None:
                 palette = extract_dominant_palette(Path(state.project.image_path))
                 _palette_cache[image_key] = palette
         if palette is not None:
+            frame_width, frame_height = ((320, 568) if state.project.orientation == "vertical" else (568, 320))
             image = compose_preview_frame(
                 state.project,
                 palette,
                 duration,
                 current_time=state.playback_position,
-                width=state.preview.width,
-                height=state.preview.height,
+                width=frame_width,
+                height=frame_height,
             )
     except Exception:
         image = None
@@ -57,6 +58,15 @@ def update_preview_texture(state) -> None:
         image[..., 2] = 32
         image[..., 3] = 255
     else:
-        image = np.array(image.convert("RGBA"), dtype=np.uint8)
+        frame = np.array(image.convert("RGBA"), dtype=np.uint8)
+        canvas = np.zeros((state.preview.height, state.preview.width, 4), dtype=np.uint8)
+        canvas[..., 0] = 20
+        canvas[..., 1] = 24
+        canvas[..., 2] = 32
+        canvas[..., 3] = 255
+        off_y = max(0, (state.preview.height - frame.shape[0]) // 2)
+        off_x = max(0, (state.preview.width - frame.shape[1]) // 2)
+        canvas[off_y:off_y + frame.shape[0], off_x:off_x + frame.shape[1]] = frame
+        image = canvas
     dpg.set_value(state.preview.texture_tag, (image.astype(np.float32) / 255.0).flatten().tolist())
     state.preview.dirty = False
