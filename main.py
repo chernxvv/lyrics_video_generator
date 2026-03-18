@@ -11,25 +11,11 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
 
-import logging
-
-from PySide6.QtWidgets import QApplication
-
-from core.logging_config import setup_logging
-from gui import MainWindow
+from gui_dpg.app import run_app
 
 
 def main() -> int:
-    setup_logging()
-    logger = logging.getLogger(__name__)
-    logger.info("Запуск приложения")
-
-    app = QApplication([])
-    window = MainWindow()
-    window.show()
-
-    logger.info("GUI готов, вход в event loop")
-    return app.exec()
+    return run_app()
 
 
 if __name__ == "__main__":

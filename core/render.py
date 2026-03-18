@@ -321,6 +321,47 @@ def _build_lyrics_overlay(
     return overlay
 
 
+def compose_preview_frame(
+    project: ProjectData,
+    palette: PaletteInfo,
+    duration: float,
+    current_time: float,
+    width: int,
+    height: int,
+):
+    base_width, base_height = get_base_canvas(project.orientation)
+    scale_factor = _compute_uniform_scale(base_width, base_height, width, height)
+    sorted_lines, start_times = prepare_timeline(project.lyrics)
+    current_index = active_line_index_precomputed(start_times, current_time)
+    background = build_background_frame(
+        t=current_time,
+        width=width,
+        height=height,
+        palette=palette,
+        mode=project.background_mode,
+        beat_result=None,
+    )
+    image = Image.fromarray(background, mode="RGB").convert("RGBA")
+    draw = ImageDraw.Draw(image, "RGBA")
+    font_regular = _load_font(_scale_value(40, scale_factor), LYRICS_FONT_REGULAR_FILE)
+    font_bold = _load_font(_scale_value(42, scale_factor), LYRICS_FONT_BOLD_FILE)
+    line_gap, block_gap = _lyrics_spacing(scale_factor)
+    overlay = _build_lyrics_overlay(
+        sorted_lines,
+        current_index,
+        width,
+        height,
+        font_regular,
+        font_bold,
+        project.orientation,
+        line_gap,
+        block_gap,
+    )
+    if overlay is not None:
+        image.alpha_composite(overlay)
+    return image
+
+
 def _render_chunk(
     chunk_start: int,
     chunk_end: int,
