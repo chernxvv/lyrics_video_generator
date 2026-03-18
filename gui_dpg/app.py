@@ -31,6 +31,7 @@ class DPGApplication:
         self.state = UIState()
         self._timeline_drag_index: int | None = None
         self._worker_lock = threading.Lock()
+        self._timeline_drag_active = False
 
     def log(self, message: str) -> None:
         logger.info(message)
@@ -82,9 +83,9 @@ class DPGApplication:
         dpg.add_input_float(tag="timeline_zoom", label="Timeline zoom", default_value=1.0, min_value=0.2, max_value=8.0, min_clamped=True, max_clamped=True, callback=lambda s, a, u: self.on_zoom_changed())
         dpg.add_separator()
         dpg.add_text("Preview")
-        dpg.add_button(label="<< 1s", callback=lambda s, a, u: self.nudge_time(-1.0))
-        dpg.add_same_line()
-        dpg.add_button(label="1s >>", callback=lambda s, a, u: self.nudge_time(1.0))
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="<< 1s", callback=lambda s, a, u: self.nudge_time(-1.0))
+            dpg.add_button(label="1s >>", callback=lambda s, a, u: self.nudge_time(1.0))
         dpg.add_text("Diagnostics / Logs")
         dpg.add_input_text(tag="diagnostics_text", multiline=True, readonly=True, width=-1, height=280)
 
@@ -388,10 +389,20 @@ class DPGApplication:
             with dpg.item_handler_registry(tag="timeline_handlers"):
                 dpg.add_item_clicked_handler(callback=self._on_timeline_click)
                 dpg.add_item_double_clicked_handler(callback=self._on_timeline_double_click)
-                dpg.add_item_drag_handler(callback=self._on_timeline_drag)
-                if hasattr(dpg, "add_item_drag_release_handler"):
-                    dpg.add_item_drag_release_handler(callback=self._on_timeline_drag_release)
         dpg.bind_item_handler_registry("timeline_drawlist", "timeline_handlers")
+
+    def _update_timeline_interaction(self) -> None:
+        if not dpg.does_item_exist("timeline_drawlist"):
+            return
+        hovered = dpg.is_item_hovered("timeline_drawlist") if hasattr(dpg, "is_item_hovered") else False
+        mouse_down = dpg.is_mouse_button_down(0) if hasattr(dpg, "is_mouse_button_down") else False
+        if hovered and mouse_down and self._timeline_drag_index is not None:
+            self._timeline_drag_active = True
+            self._on_timeline_drag(None, None)
+            return
+        if self._timeline_drag_active and not mouse_down:
+            self._timeline_drag_active = False
+            self._on_timeline_drag_release(None, None)
 
     def _on_timeline_click(self, sender, app_data):
         self._seek_or_select_from_mouse(select=True)
@@ -555,6 +566,7 @@ class DPGApplication:
                 self.redraw_timeline()
                 self.refresh_preview()
             last = now
+            self._update_timeline_interaction()
             dpg.render_dearpygui_frame()
         dpg.destroy_context()
 
