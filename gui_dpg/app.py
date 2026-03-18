@@ -79,16 +79,20 @@ class DPGApplication:
 
     def build_left_panel(self) -> None:
         with dpg.child_window(border=False):
-            dpg.add_text("Project Assets")
+            dpg.add_text("Project Setup", color=(235, 235, 245))
+            dpg.add_text("1. Add source files and basic metadata.", color=(170, 180, 195))
             with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
-                dpg.add_table_column(init_width_or_weight=0.32)
-                dpg.add_table_column(init_width_or_weight=0.68)
+                dpg.add_table_column(init_width_or_weight=0.34)
+                dpg.add_table_column(init_width_or_weight=0.66)
                 with dpg.table_row():
                     dpg.add_text("Audio")
-                    dpg.add_button(tag="audio_asset_button", label="Import audio", callback=self.pick_audio, width=-1, height=32)
+                    dpg.add_button(tag="audio_asset_button", label="Import audio", callback=self.pick_audio, width=-1, height=34)
                 with dpg.table_row():
                     dpg.add_text("Cover")
-                    dpg.add_button(tag="image_asset_button", label="Import cover", callback=self.pick_image, width=-1, height=32)
+                    dpg.add_button(tag="image_asset_button", label="Import cover", callback=self.pick_image, width=-1, height=34)
+                with dpg.table_row():
+                    dpg.add_text("Lyrics")
+                    dpg.add_button(label="Import lyrics", callback=self.pick_lyrics, width=-1, height=34)
                 with dpg.table_row():
                     dpg.add_text("Artist")
                     dpg.add_input_text(tag="artist", callback=lambda s, a, u: self.sync_project_from_ui(), width=-1)
@@ -98,48 +102,60 @@ class DPGApplication:
                 with dpg.table_row():
                     dpg.add_text("Release")
                     dpg.add_input_text(tag="release_date", callback=lambda s, a, u: self.sync_project_from_ui(), width=-1)
-        dpg.add_separator()
-        dpg.add_text("Video Settings")
-        with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
-            dpg.add_table_column(init_width_or_weight=0.32)
-            dpg.add_table_column(init_width_or_weight=0.68)
-            with dpg.table_row():
-                dpg.add_text("Orientation")
-                dpg.add_combo(("9:16", "16:9"), default_value="9:16", tag="orientation", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
-            with dpg.table_row():
-                dpg.add_text("Profile")
-                dpg.add_combo(("Preview", "Final"), default_value="Final", tag="render_profile", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
-            with dpg.table_row():
-                dpg.add_text("Background")
-                dpg.add_combo(("soft_gradient", "bpm_dynamic"), default_value="soft_gradient", tag="background_mode", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
-        dpg.add_separator()
-        dpg.add_text("Sync Settings")
-        with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
-            dpg.add_table_column(init_width_or_weight=0.32)
-            dpg.add_table_column(init_width_or_weight=0.68)
-            with dpg.table_row():
-                dpg.add_text("Mode")
-                dpg.add_combo(("manual", "auto"), default_value="manual", tag="sync_mode", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
-        with dpg.collapsing_header(label="Advanced sync / performance", default_open=False):
+
+            dpg.add_separator()
+            dpg.add_text("Generation Settings", color=(235, 235, 245))
+            dpg.add_text("2. Choose the look and generation mode.", color=(170, 180, 195))
             with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
                 dpg.add_table_column(init_width_or_weight=0.42)
                 dpg.add_table_column(init_width_or_weight=0.58)
                 with dpg.table_row():
-                    dpg.add_text("Threads")
-                    dpg.add_input_int(tag="thread_count", default_value=2, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+                    dpg.add_text("Orientation")
+                    dpg.add_combo(("9:16", "16:9"), default_value="9:16", tag="orientation", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
                 with dpg.table_row():
-                    dpg.add_text("Frame chunk")
-                    dpg.add_input_int(tag="chunk_size", default_value=60, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+                    dpg.add_text("Background")
+                    dpg.add_combo(("soft_gradient", "bpm_dynamic"), default_value="soft_gradient", tag="background_mode", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
                 with dpg.table_row():
-                    dpg.add_text("Timeline zoom")
-                    dpg.add_input_float(tag="timeline_zoom", default_value=1.0, min_value=0.2, max_value=8.0, min_clamped=True, max_clamped=True, callback=lambda s, a, u: self.on_zoom_changed(), width=-1)
-        dpg.add_separator()
-        dpg.add_text("Preview")
-        with dpg.group(horizontal=True):
-            dpg.add_button(label="<< 1s", callback=lambda s, a, u: self.nudge_time(-1.0))
-            dpg.add_button(label="1s >>", callback=lambda s, a, u: self.nudge_time(1.0))
-        with dpg.collapsing_header(label="Diagnostics / Logs", default_open=False):
-            dpg.add_input_text(tag="diagnostics_text", multiline=True, readonly=True, width=-1, height=220)
+                    dpg.add_text("Profile")
+                    dpg.add_combo(("Preview", "Final"), default_value="Final", tag="render_profile", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+                with dpg.table_row():
+                    dpg.add_text("Sync mode")
+                    dpg.add_combo(("manual", "auto"), default_value="manual", tag="sync_mode", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+
+            dpg.add_separator()
+            dpg.add_text("Sync", color=(235, 235, 245))
+            dpg.add_text("3. Auto-sync if you want a fast starting point.", color=(170, 180, 195))
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Auto-sync", callback=self.run_auto_sync, width=120, height=34)
+                dpg.add_button(label="Rebuild waveform", callback=self.rebuild_waveform, width=130, height=34)
+            dpg.add_spacer(height=6)
+
+            dpg.add_separator()
+            dpg.add_text("Generate", color=(235, 235, 245))
+            dpg.add_text("4. Generate a quick preview, then render final output.", color=(170, 180, 195))
+            dpg.add_button(label="Generate Preview", callback=lambda s, a, u: self.render_video("Preview"), width=-1, height=42)
+            dpg.add_spacer(height=6)
+            dpg.add_button(label="Render Final", callback=lambda s, a, u: self.render_video("Final"), width=-1, height=38)
+
+            dpg.add_separator()
+            with dpg.collapsing_header(label="Advanced", default_open=False):
+                with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
+                    dpg.add_table_column(init_width_or_weight=0.42)
+                    dpg.add_table_column(init_width_or_weight=0.58)
+                    with dpg.table_row():
+                        dpg.add_text("Threads")
+                        dpg.add_input_int(tag="thread_count", default_value=2, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+                    with dpg.table_row():
+                        dpg.add_text("Frame chunk")
+                        dpg.add_input_int(tag="chunk_size", default_value=60, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+                    with dpg.table_row():
+                        dpg.add_text("Timeline zoom")
+                        dpg.add_input_float(tag="timeline_zoom", default_value=1.0, min_value=0.2, max_value=8.0, min_clamped=True, max_clamped=True, callback=lambda s, a, u: self.on_zoom_changed(), width=-1)
+                dpg.add_spacer(height=8)
+                dpg.add_button(label="Refresh Preview", callback=self.refresh_preview, width=-1, height=32)
+
+            with dpg.collapsing_header(label="Diagnostics / Logs", default_open=False):
+                dpg.add_input_text(tag="diagnostics_text", multiline=True, readonly=True, width=-1, height=220)
 
     def build_center_panel(self) -> None:
         dpg.add_text("Preview", color=(235, 235, 245))

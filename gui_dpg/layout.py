@@ -9,13 +9,6 @@ def build_toolbar(app) -> None:
             ("New Project", app.new_project),
             ("Open Project", app.pick_project),
             ("Save Project", app.save_project),
-            ("Auto-sync", app.run_auto_sync),
-            ("Play / Pause", app.toggle_playback),
-            ("Stop", app.stop_playback),
-            ("Render Preview", lambda s, a, u: app.render_video("Preview")),
-            ("Render Final", lambda s, a, u: app.render_video("Final")),
-            ("Rebuild Waveform", app.rebuild_waveform),
-            ("Refresh Preview", app.refresh_preview),
         ]:
             dpg.add_button(label=label, callback=cb)
         dpg.add_spacer(width=18)
