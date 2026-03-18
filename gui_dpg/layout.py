@@ -26,10 +26,11 @@ def build_workspace(app) -> None:
         borders_outerH=False,
         policy=dpg.mvTable_SizingStretchProp,
         tag="workspace_table",
+        width=-1,
     ):
-        dpg.add_table_column(init_width_or_weight=0.22, width_fixed=True)
+        dpg.add_table_column(init_width_or_weight=320, width_fixed=True)
         dpg.add_table_column(init_width_or_weight=0.50)
-        dpg.add_table_column(init_width_or_weight=0.28, width_fixed=True)
+        dpg.add_table_column(init_width_or_weight=360, width_fixed=True)
         with dpg.table_row():
             with dpg.table_cell():
                 with dpg.child_window(tag="left_panel", width=-1, autosize_y=True, border=False):

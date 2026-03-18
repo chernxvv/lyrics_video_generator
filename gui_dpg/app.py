@@ -96,7 +96,9 @@ class DPGApplication:
         if hasattr(dpg, "set_viewport_resize_callback"):
             dpg.set_viewport_resize_callback(self._on_viewport_resize)
         dpg.show_viewport()
-        self._on_viewport_resize(None, (1680, 960))
+        viewport_w = dpg.get_viewport_client_width() if hasattr(dpg, "get_viewport_client_width") else 1680
+        viewport_h = dpg.get_viewport_client_height() if hasattr(dpg, "get_viewport_client_height") else 960
+        self._on_viewport_resize(None, (viewport_w, viewport_h))
 
     def build_left_panel(self) -> None:
         with dpg.child_window(border=False):
@@ -236,17 +238,8 @@ class DPGApplication:
         preview_size = max(420, min(760, center_width - 24, int(content_height * 0.52)))
         self.state.preview.width = preview_size
         self.state.preview.height = preview_size
-        panel_height = max(320, content_height - self._toolbar_height)
         if dpg.does_item_exist("root_window"):
             dpg.configure_item("root_window", pos=(0, 0), width=root_width, height=root_height)
-        if dpg.does_item_exist("workspace_table"):
-            dpg.configure_item("workspace_table", width=-1, height=panel_height)
-        if dpg.does_item_exist("left_panel"):
-            dpg.configure_item("left_panel", width=self._left_panel_width, height=panel_height)
-        if dpg.does_item_exist("center_panel"):
-            dpg.configure_item("center_panel", width=center_width, height=panel_height)
-        if dpg.does_item_exist("right_panel"):
-            dpg.configure_item("right_panel", width=self._right_panel_width, height=panel_height)
         if dpg.does_item_exist("preview_image"):
             dpg.configure_item("preview_image", width=preview_size, height=preview_size)
         if dpg.does_item_exist("timeline_image"):
@@ -905,5 +898,9 @@ class DPGApplication:
 
 def run_app() -> int:
     setup_logging()
-    DPGApplication().run()
-    return 0
+    try:
+        DPGApplication().run()
+        return 0
+    except Exception:  # noqa: BLE001
+        logger.exception("Dear PyGui application crashed during startup or runtime")
+        raise
