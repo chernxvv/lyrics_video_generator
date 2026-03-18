@@ -7,11 +7,8 @@ def build_toolbar(app) -> None:
     with dpg.group(horizontal=True, parent="root_window"):
         for label, cb in [
             ("New Project", app.new_project),
-            ("Open Project", lambda s, a, u: dpg.configure_item("open_project_dialog", show=True)),
+            ("Open Project", app.pick_project),
             ("Save Project", app.save_project),
-            ("Import Audio", lambda s, a, u: dpg.configure_item("audio_dialog", show=True)),
-            ("Import Cover", lambda s, a, u: dpg.configure_item("image_dialog", show=True)),
-            ("Import Lyrics", lambda s, a, u: dpg.configure_item("lyrics_dialog", show=True)),
             ("Auto-sync", app.run_auto_sync),
             ("Play / Pause", app.toggle_playback),
             ("Stop", app.stop_playback),

@@ -52,8 +52,8 @@ class DPGApplication:
         dpg.setup_dearpygui()
         dpg.configure_app(docking=True, docking_space=True)
         dpg.bind_theme(theme.build_theme())
+        self._bind_default_font()
         ensure_preview_texture(self.state.preview.texture_tag, self.state.preview.width, self.state.preview.height)
-        self._register_dialogs()
         with dpg.window(tag="root_window", label="Lyrics Video Generator", width=1660, height=930):
             layout.build_toolbar(self)
             dpg.add_separator()
@@ -65,22 +65,55 @@ class DPGApplication:
 
     def build_left_panel(self) -> None:
         dpg.add_text("Project Assets")
-        dpg.add_input_text(tag="audio_path", label="Audio", readonly=True)
-        dpg.add_input_text(tag="image_path", label="Cover", readonly=True)
-        dpg.add_input_text(tag="artist", label="Artist", callback=lambda s, a, u: self.sync_project_from_ui())
-        dpg.add_input_text(tag="title", label="Title", callback=lambda s, a, u: self.sync_project_from_ui())
-        dpg.add_input_text(tag="release_date", label="Release", callback=lambda s, a, u: self.sync_project_from_ui())
+        with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
+            dpg.add_table_column(init_width_or_weight=0.32)
+            dpg.add_table_column(init_width_or_weight=0.68)
+            with dpg.table_row():
+                dpg.add_text("Audio")
+                dpg.add_button(tag="audio_asset_button", label="Import audio", callback=self.pick_audio, width=-1, height=32)
+            with dpg.table_row():
+                dpg.add_text("Cover")
+                dpg.add_button(tag="image_asset_button", label="Import cover", callback=self.pick_image, width=-1, height=32)
+            with dpg.table_row():
+                dpg.add_text("Artist")
+                dpg.add_input_text(tag="artist", callback=lambda s, a, u: self.sync_project_from_ui(), width=-1)
+            with dpg.table_row():
+                dpg.add_text("Title")
+                dpg.add_input_text(tag="title", callback=lambda s, a, u: self.sync_project_from_ui(), width=-1)
+            with dpg.table_row():
+                dpg.add_text("Release")
+                dpg.add_input_text(tag="release_date", callback=lambda s, a, u: self.sync_project_from_ui(), width=-1)
         dpg.add_separator()
         dpg.add_text("Video Settings")
-        dpg.add_combo(("9:16", "16:9"), default_value="9:16", tag="orientation", callback=lambda s, a, u: self.on_settings_changed())
-        dpg.add_combo(("Preview", "Final"), default_value="Final", tag="render_profile", callback=lambda s, a, u: self.on_settings_changed())
-        dpg.add_combo(("soft_gradient", "bpm_dynamic"), default_value="soft_gradient", tag="background_mode", callback=lambda s, a, u: self.on_settings_changed())
+        with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
+            dpg.add_table_column(init_width_or_weight=0.32)
+            dpg.add_table_column(init_width_or_weight=0.68)
+            with dpg.table_row():
+                dpg.add_text("Orientation")
+                dpg.add_combo(("9:16", "16:9"), default_value="9:16", tag="orientation", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+            with dpg.table_row():
+                dpg.add_text("Profile")
+                dpg.add_combo(("Preview", "Final"), default_value="Final", tag="render_profile", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+            with dpg.table_row():
+                dpg.add_text("Background")
+                dpg.add_combo(("soft_gradient", "bpm_dynamic"), default_value="soft_gradient", tag="background_mode", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
         dpg.add_separator()
         dpg.add_text("Sync Settings")
-        dpg.add_combo(("manual", "auto"), default_value="manual", tag="sync_mode", callback=lambda s, a, u: self.on_settings_changed())
-        dpg.add_input_int(tag="thread_count", label="Threads", default_value=2, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed())
-        dpg.add_input_int(tag="chunk_size", label="Frame chunk", default_value=60, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed())
-        dpg.add_input_float(tag="timeline_zoom", label="Timeline zoom", default_value=1.0, min_value=0.2, max_value=8.0, min_clamped=True, max_clamped=True, callback=lambda s, a, u: self.on_zoom_changed())
+        with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
+            dpg.add_table_column(init_width_or_weight=0.32)
+            dpg.add_table_column(init_width_or_weight=0.68)
+            with dpg.table_row():
+                dpg.add_text("Mode")
+                dpg.add_combo(("manual", "auto"), default_value="manual", tag="sync_mode", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+            with dpg.table_row():
+                dpg.add_text("Threads")
+                dpg.add_input_int(tag="thread_count", default_value=2, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+            with dpg.table_row():
+                dpg.add_text("Frame chunk")
+                dpg.add_input_int(tag="chunk_size", default_value=60, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+            with dpg.table_row():
+                dpg.add_text("Timeline zoom")
+                dpg.add_input_float(tag="timeline_zoom", default_value=1.0, min_value=0.2, max_value=8.0, min_clamped=True, max_clamped=True, callback=lambda s, a, u: self.on_zoom_changed(), width=-1)
         dpg.add_separator()
         dpg.add_text("Preview")
         with dpg.group(horizontal=True):
@@ -106,28 +139,84 @@ class DPGApplication:
             pass
 
     def build_right_panel(self) -> None:
-        dpg.add_text("Lyrics Lines")
+        with dpg.group(horizontal=True):
+            dpg.add_text("Lyrics Lines")
+            dpg.add_spacer(width=12)
+            dpg.add_button(label="Import lyrics", callback=self.pick_lyrics)
         with dpg.child_window(height=360, border=True):
             dpg.add_group(tag="lyrics_list")
         dpg.add_separator()
         dpg.add_text("Selected Line")
-        dpg.add_input_int(tag="selected_index", label="Index", readonly=True)
-        dpg.add_input_text(tag="selected_time", label="Start mm:ss", callback=lambda s, a, u: self.apply_selected_line_edits())
-        dpg.add_input_text(tag="selected_text", label="Text", multiline=True, height=130, callback=lambda s, a, u: self.apply_selected_line_edits())
+        dpg.add_text("Index")
+        dpg.add_input_int(tag="selected_index", readonly=True, width=-1)
+        dpg.add_text("Start mm:ss")
+        dpg.add_input_text(tag="selected_time", callback=lambda s, a, u: self.apply_selected_line_edits(), width=-1)
+        dpg.add_text("Text")
+        dpg.add_input_text(tag="selected_text", multiline=True, height=130, callback=lambda s, a, u: self.apply_selected_line_edits(), width=-1)
         with dpg.group(horizontal=True):
             dpg.add_button(label="Add line", callback=self.add_line)
             dpg.add_button(label="Delete line", callback=self.delete_selected_line)
 
-    def _register_dialogs(self) -> None:
-        dialogs.attach_file_dialog("audio_dialog", "Import audio", self._on_audio_dialog, [(".mp3", "Audio"), (".wav", "Audio"), (".flac", "Audio"), (".m4a", "Audio")])
-        dialogs.attach_file_dialog("image_dialog", "Import cover", self._on_image_dialog, [(".png", "Image"), (".jpg", "Image"), (".jpeg", "Image"), (".webp", "Image")])
-        dialogs.attach_file_dialog("lyrics_dialog", "Import lyrics", self._on_lyrics_dialog, [(".txt", "Lyrics"), (".lrc", "Lyrics")])
-        dialogs.attach_file_dialog("open_project_dialog", "Open project", self._on_open_project, [(".json", "Project")])
-        dialogs.attach_file_dialog("save_project_dialog", "Save project", self._on_save_project, [(".json", "Project")])
-        dialogs.attach_file_dialog("render_dialog", "Render output", self._on_render_path, [(".mp4", "Video")])
+    def _bind_default_font(self) -> None:
+        font_path = Path(__file__).resolve().parent.parent / "assets" / "fonts" / "NotoSans-Regular.ttf"
+        if not font_path.exists():
+            return
+        with dpg.font_registry():
+            default_font = dpg.add_font(str(font_path), 18)
+        dpg.bind_font(default_font)
+
+    def _update_asset_buttons(self) -> None:
+        audio_label = self.state.project.audio_path.name if self.state.project.audio_path else "Import audio"
+        image_label = self.state.project.image_path.name if self.state.project.image_path else "Import cover"
+        if dpg.does_item_exist("audio_asset_button"):
+            dpg.configure_item("audio_asset_button", label=audio_label)
+        if dpg.does_item_exist("image_asset_button"):
+            dpg.configure_item("image_asset_button", label=image_label)
+
+    def pick_audio(self, *args) -> None:
+        path = dialogs.pick_open_file(title="Import audio", filetypes=[("Audio files", "*.mp3 *.wav *.flac *.m4a"), ("All files", "*.*")])
+        if path is None:
+            return
+        self.state.project.audio_path = path
+        self.sync_ui_from_project()
+        self.rebuild_waveform()
+        self.set_status("Ready", f"Audio imported: {path.name}")
+
+    def pick_image(self, *args) -> None:
+        path = dialogs.pick_open_file(title="Import cover", filetypes=[("Image files", "*.png *.jpg *.jpeg *.webp"), ("All files", "*.*")])
+        if path is None:
+            return
+        self.state.project.image_path = path
+        self.sync_ui_from_project()
+        self.refresh_preview()
+        self.set_status("Ready", f"Cover imported: {path.name}")
+
+    def pick_lyrics(self, *args) -> None:
+        path = dialogs.pick_open_file(title="Import lyrics", filetypes=[("Lyrics files", "*.txt *.lrc"), ("All files", "*.*")])
+        if path is not None:
+            self._load_lyrics_from_path(path)
+
+    def pick_project(self, *args) -> None:
+        path = dialogs.pick_open_file(title="Open project", filetypes=[("Project files", "*.json"), ("All files", "*.*")])
+        if path is None:
+            return
+        self.state.project = load_project_file(path)
+        self.state.project_path = path
+        self.state.preview.dirty = True
+        self.sync_ui_from_project()
+        self.rebuild_waveform()
+        self.refresh_all()
+        self.set_status("Ready", f"Project loaded: {path.name}")
+
+    def _choose_project_save_path(self) -> Path | None:
+        return dialogs.pick_save_file(title="Save project", default_extension=".json", filetypes=[("Project files", "*.json"), ("All files", "*.*")])
+
+    def _choose_render_path(self, mode: str) -> Path | None:
+        return dialogs.pick_save_file(title=f"Render {mode}", default_extension=".mp4", filetypes=[("Video files", "*.mp4"), ("All files", "*.*")])
 
     def refresh_all(self) -> None:
         self.sync_ui_from_project()
+        self._update_asset_buttons()
         self.refresh_lyrics_list()
         self.refresh_selected_line_panel()
         self.refresh_preview()
@@ -147,15 +236,14 @@ class DPGApplication:
 
     def sync_ui_from_project(self) -> None:
         p = self.state.project
-        if dpg.does_item_exist("audio_path"):
-            dpg.set_value("audio_path", str(p.audio_path or ""))
-            dpg.set_value("image_path", str(p.image_path or ""))
+        if dpg.does_item_exist("artist"):
             dpg.set_value("artist", p.artist)
             dpg.set_value("title", p.title)
             dpg.set_value("release_date", p.release_date)
             dpg.set_value("orientation", "9:16" if p.orientation == "vertical" else "16:9")
             dpg.set_value("background_mode", p.background_mode)
             dpg.set_value("sync_mode", p.sync_mode)
+            self._update_asset_buttons()
 
     def on_settings_changed(self, *args) -> None:
         self.sync_project_from_ui()
@@ -174,58 +262,15 @@ class DPGApplication:
         self.refresh_all()
 
     def save_project(self, *args) -> None:
-        if self.state.project_path is not None:
-            self.sync_project_from_ui()
-            save_project_file(self.state.project_path, self.state.project)
-            self.set_status("Ready", f"Project saved: {self.state.project_path.name}")
+        if self.state.project_path is None:
+            self.state.project_path = self._choose_project_save_path()
+        if self.state.project_path is None:
             return
-        dpg.configure_item("save_project_dialog", show=True)
-
-    def _on_save_project(self, sender, app_data):
-        path = dialogs._normalize_selection(app_data)
-        if path is None:
-            return
-        if path.suffix.lower() != ".json":
-            path = path.with_suffix(".json")
-        self.state.project_path = path
         self.sync_project_from_ui()
-        save_project_file(path, self.state.project)
-        self.set_status("Ready", f"Project saved: {path.name}")
+        save_project_file(self.state.project_path, self.state.project)
+        self.set_status("Ready", f"Project saved: {self.state.project_path.name}")
 
-    def _on_open_project(self, sender, app_data):
-        path = dialogs._normalize_selection(app_data)
-        if path is None:
-            return
-        self.state.project = load_project_file(path)
-        self.state.project_path = path
-        self.state.preview.dirty = True
-        self.sync_ui_from_project()
-        self.rebuild_waveform()
-        self.refresh_all()
-        self.set_status("Ready", f"Project loaded: {path.name}")
-
-    def _on_audio_dialog(self, sender, app_data):
-        path = dialogs._normalize_selection(app_data)
-        if path is None:
-            return
-        self.state.project.audio_path = path
-        self.sync_ui_from_project()
-        self.rebuild_waveform()
-        self.set_status("Ready", f"Audio imported: {path.name}")
-
-    def _on_image_dialog(self, sender, app_data):
-        path = dialogs._normalize_selection(app_data)
-        if path is None:
-            return
-        self.state.project.image_path = path
-        self.sync_ui_from_project()
-        self.refresh_preview()
-        self.set_status("Ready", f"Cover imported: {path.name}")
-
-    def _on_lyrics_dialog(self, sender, app_data):
-        path = dialogs._normalize_selection(app_data)
-        if path is None:
-            return
+    def _load_lyrics_from_path(self, path: Path) -> None:
         for encoding in ("utf-8", "utf-8-sig", "cp1251"):
             try:
                 lines = [line.strip() for line in path.read_text(encoding=encoding).splitlines() if line.strip()]
@@ -249,8 +294,10 @@ class DPGApplication:
         for child in dpg.get_item_children("lyrics_list", 1) or []:
             dpg.delete_item(child)
         for index, line in enumerate(self.state.project.lyrics):
-            label = f"{line.start_time}  {line.text[:48]}"
-            dpg.add_selectable(label=label, parent="lyrics_list", default_value=index == self.state.selected_line_index, callback=lambda s, a, u=index: self.select_line(u))
+            with dpg.group(horizontal=True, parent="lyrics_list"):
+                dpg.add_selectable(label=str(index + 1), default_value=index == self.state.selected_line_index, callback=lambda s, a, u=index: self.select_line(u), width=34)
+                dpg.add_input_text(default_value=line.start_time, width=78, callback=lambda s, a, u=index: self._edit_lyric_time(u, a))
+                dpg.add_input_text(default_value=line.text, width=-1, callback=lambda s, a, u=index: self._edit_lyric_text(u, a))
 
     def refresh_selected_line_panel(self) -> None:
         index = self.state.selected_line_index
@@ -268,6 +315,20 @@ class DPGApplication:
         self.refresh_lyrics_list()
         self.refresh_selected_line_panel()
         self.redraw_timeline()
+
+    def _edit_lyric_time(self, index: int, value: str) -> None:
+        self.state.project.lyrics[index] = LyricLine(start_time=value, text=self.state.project.lyrics[index].text)
+        if self.state.selected_line_index == index:
+            self.refresh_selected_line_panel()
+        self.redraw_timeline()
+        self.refresh_preview()
+
+    def _edit_lyric_text(self, index: int, value: str) -> None:
+        self.state.project.lyrics[index] = LyricLine(start_time=self.state.project.lyrics[index].start_time, text=value)
+        if self.state.selected_line_index == index:
+            self.refresh_selected_line_panel()
+        self.redraw_timeline()
+        self.refresh_preview()
 
     def add_line(self, *args) -> None:
         self.state.project.lyrics.append(LyricLine(start_time="00:00", text="New lyric line"))
@@ -475,7 +536,7 @@ class DPGApplication:
     def run_auto_sync(self, *args) -> None:
         self.sync_project_from_ui()
         audio_path = self.state.project.audio_path
-        text = self.state.project.auto_sync_lyrics_text.strip()
+        text = self.state.project.auto_sync_lyrics_text.strip() or "\n".join(line.text for line in self.state.project.lyrics).strip()
         if not audio_path:
             dialogs.show_message("Auto-sync", "Сначала импортируйте аудио.")
             return
@@ -503,14 +564,9 @@ class DPGApplication:
 
     def render_video(self, mode: str, *args) -> None:
         self.sync_project_from_ui()
-        dpg.set_item_user_data("render_dialog", mode)
-        dpg.configure_item("render_dialog", show=True)
-
-    def _on_render_path(self, sender, app_data):
-        path = dialogs._normalize_selection(app_data)
+        path = self._choose_render_path(mode)
         if path is None:
             return
-        mode = dpg.get_item_user_data("render_dialog") or "Final"
         if path.suffix.lower() != ".mp4":
             path = path.with_suffix(".mp4")
         orientation = self.state.project.orientation
@@ -545,7 +601,7 @@ class DPGApplication:
             elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:
                 self.state.project.image_path = path
             elif suffix in {".txt", ".lrc"}:
-                self._on_lyrics_dialog(None, {"selections": {path.name: str(path)}})
+                self._load_lyrics_from_path(path)
             elif suffix == ".json":
                 self.state.project = load_project_file(path)
                 self.state.project_path = path
