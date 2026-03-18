@@ -45,6 +45,11 @@ class DPGApplication:
         self._audio_process: subprocess.Popen | None = None
         self._playback_anchor: float = 0.0
         self._playback_start_position: float = 0.0
+        self._root_margin_x = 12
+        self._root_margin_y = 12
+        self._toolbar_height = 44
+        self._left_panel_width = 320
+        self._right_panel_width = 360
 
     def log(self, message: str) -> None:
         logger.info(message)
@@ -68,16 +73,30 @@ class DPGApplication:
         self._bind_default_font()
         self._sync_preview_geometry()
         self._ensure_timeline_texture()
-        with dpg.window(tag="root_window", label="Lyrics Video Generator", width=1660, height=930):
+        with dpg.window(
+            tag="root_window",
+            label="Lyrics Video Generator",
+            pos=(0, 0),
+            width=1680,
+            height=960,
+            no_title_bar=True,
+            no_move=True,
+            no_resize=True,
+            no_collapse=True,
+            no_close=True,
+            no_bring_to_front_on_focus=True,
+        ):
             layout.build_toolbar(self)
             dpg.add_separator()
             layout.build_workspace(self)
+        dpg.set_primary_window("root_window", True)
         self.refresh_all()
         if hasattr(dpg, "set_viewport_drop_callback"):
             dpg.set_viewport_drop_callback(self.handle_file_drop)
         if hasattr(dpg, "set_viewport_resize_callback"):
             dpg.set_viewport_resize_callback(self._on_viewport_resize)
         dpg.show_viewport()
+        self._on_viewport_resize(None, (1680, 960))
 
     def build_left_panel(self) -> None:
         with dpg.child_window(border=False):
@@ -207,11 +226,27 @@ class DPGApplication:
             viewport_w, viewport_h = int(app_data[0]), int(app_data[1])
         else:
             viewport_w, viewport_h = 1680, 960
-        self._timeline_width = max(720, min(1400, viewport_w - 620))
-        self._timeline_height = max(260, min(420, int(viewport_h * 0.30)))
-        preview_size = max(420, min(760, int(viewport_h * 0.58), viewport_w - 760))
+        root_width = max(960, viewport_w)
+        root_height = max(640, viewport_h)
+        content_width = max(720, root_width - (self._root_margin_x * 2))
+        content_height = max(480, root_height - (self._root_margin_y * 2))
+        center_width = max(360, content_width - self._left_panel_width - self._right_panel_width - 32)
+        self._timeline_width = max(360, center_width - 24)
+        self._timeline_height = max(220, min(420, int(content_height * 0.28)))
+        preview_size = max(420, min(760, center_width - 24, int(content_height * 0.52)))
         self.state.preview.width = preview_size
         self.state.preview.height = preview_size
+        panel_height = max(320, content_height - self._toolbar_height)
+        if dpg.does_item_exist("root_window"):
+            dpg.configure_item("root_window", pos=(0, 0), width=root_width, height=root_height)
+        if dpg.does_item_exist("workspace_table"):
+            dpg.configure_item("workspace_table", width=-1, height=panel_height)
+        if dpg.does_item_exist("left_panel"):
+            dpg.configure_item("left_panel", width=self._left_panel_width, height=panel_height)
+        if dpg.does_item_exist("center_panel"):
+            dpg.configure_item("center_panel", width=center_width, height=panel_height)
+        if dpg.does_item_exist("right_panel"):
+            dpg.configure_item("right_panel", width=self._right_panel_width, height=panel_height)
         if dpg.does_item_exist("preview_image"):
             dpg.configure_item("preview_image", width=preview_size, height=preview_size)
         if dpg.does_item_exist("timeline_image"):
@@ -259,8 +294,8 @@ class DPGApplication:
             dpg.add_dynamic_texture(self._timeline_width, self._timeline_height, data.flatten().tolist(), tag=self._timeline_texture_tag)
 
     def _sync_preview_geometry(self) -> None:
-        self.state.preview.width = 568
-        self.state.preview.height = 568
+        self.state.preview.width = max(420, self.state.preview.width or 568)
+        self.state.preview.height = max(420, self.state.preview.height or 568)
         ensure_preview_texture(self.state.preview.texture_tag, self.state.preview.width, self.state.preview.height)
 
     def _bind_default_font(self) -> None:

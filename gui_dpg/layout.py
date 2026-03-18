@@ -16,10 +16,27 @@ def build_toolbar(app) -> None:
 
 
 def build_workspace(app) -> None:
-    with dpg.group(horizontal=True, parent="root_window"):
-        with dpg.child_window(width=270, autosize_y=True, border=False):
-            app.build_left_panel()
-        with dpg.child_window(width=-590, autosize_y=True, border=False):
-            app.build_center_panel()
-        with dpg.child_window(width=300, autosize_y=True, border=False):
-            app.build_right_panel()
+    with dpg.table(
+        parent="root_window",
+        header_row=False,
+        resizable=False,
+        borders_innerV=False,
+        borders_outerV=False,
+        borders_innerH=False,
+        borders_outerH=False,
+        policy=dpg.mvTable_SizingStretchProp,
+        tag="workspace_table",
+    ):
+        dpg.add_table_column(init_width_or_weight=0.22, width_fixed=True)
+        dpg.add_table_column(init_width_or_weight=0.50)
+        dpg.add_table_column(init_width_or_weight=0.28, width_fixed=True)
+        with dpg.table_row():
+            with dpg.table_cell():
+                with dpg.child_window(tag="left_panel", width=-1, autosize_y=True, border=False):
+                    app.build_left_panel()
+            with dpg.table_cell():
+                with dpg.child_window(tag="center_panel", width=-1, autosize_y=True, border=False):
+                    app.build_center_panel()
+            with dpg.table_cell():
+                with dpg.child_window(tag="right_panel", width=-1, autosize_y=True, border=False):
+                    app.build_right_panel()
