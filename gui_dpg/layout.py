@@ -24,9 +24,9 @@ def build_toolbar(app) -> None:
 
 def build_workspace(app) -> None:
     with dpg.group(horizontal=True, parent="root_window"):
-        with dpg.child_window(width=330, autosize_y=True, border=True):
+        with dpg.child_window(width=270, autosize_y=True, border=False):
             app.build_left_panel()
-        with dpg.child_window(width=-360, autosize_y=True, border=False):
+        with dpg.child_window(width=-590, autosize_y=True, border=False):
             app.build_center_panel()
-        with dpg.child_window(width=340, autosize_y=True, border=True):
+        with dpg.child_window(width=300, autosize_y=True, border=False):
             app.build_right_panel()

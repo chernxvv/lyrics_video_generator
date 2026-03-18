@@ -39,8 +39,8 @@ class DPGApplication:
         self._timeline_dirty = True
         self._last_preview_render_at = 0.0
         self._timeline_texture_tag = "timeline_texture"
-        self._timeline_width = 900
-        self._timeline_height = 240
+        self._timeline_width = 1080
+        self._timeline_height = 320
         self._last_timeline_render_at = 0.0
         self._audio_process: subprocess.Popen | None = None
         self._playback_anchor: float = 0.0
@@ -78,25 +78,26 @@ class DPGApplication:
         dpg.show_viewport()
 
     def build_left_panel(self) -> None:
-        dpg.add_text("Project Assets")
-        with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
-            dpg.add_table_column(init_width_or_weight=0.32)
-            dpg.add_table_column(init_width_or_weight=0.68)
-            with dpg.table_row():
-                dpg.add_text("Audio")
-                dpg.add_button(tag="audio_asset_button", label="Import audio", callback=self.pick_audio, width=-1, height=32)
-            with dpg.table_row():
-                dpg.add_text("Cover")
-                dpg.add_button(tag="image_asset_button", label="Import cover", callback=self.pick_image, width=-1, height=32)
-            with dpg.table_row():
-                dpg.add_text("Artist")
-                dpg.add_input_text(tag="artist", callback=lambda s, a, u: self.sync_project_from_ui(), width=-1)
-            with dpg.table_row():
-                dpg.add_text("Title")
-                dpg.add_input_text(tag="title", callback=lambda s, a, u: self.sync_project_from_ui(), width=-1)
-            with dpg.table_row():
-                dpg.add_text("Release")
-                dpg.add_input_text(tag="release_date", callback=lambda s, a, u: self.sync_project_from_ui(), width=-1)
+        with dpg.child_window(border=False):
+            dpg.add_text("Project Assets")
+            with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
+                dpg.add_table_column(init_width_or_weight=0.32)
+                dpg.add_table_column(init_width_or_weight=0.68)
+                with dpg.table_row():
+                    dpg.add_text("Audio")
+                    dpg.add_button(tag="audio_asset_button", label="Import audio", callback=self.pick_audio, width=-1, height=32)
+                with dpg.table_row():
+                    dpg.add_text("Cover")
+                    dpg.add_button(tag="image_asset_button", label="Import cover", callback=self.pick_image, width=-1, height=32)
+                with dpg.table_row():
+                    dpg.add_text("Artist")
+                    dpg.add_input_text(tag="artist", callback=lambda s, a, u: self.sync_project_from_ui(), width=-1)
+                with dpg.table_row():
+                    dpg.add_text("Title")
+                    dpg.add_input_text(tag="title", callback=lambda s, a, u: self.sync_project_from_ui(), width=-1)
+                with dpg.table_row():
+                    dpg.add_text("Release")
+                    dpg.add_input_text(tag="release_date", callback=lambda s, a, u: self.sync_project_from_ui(), width=-1)
         dpg.add_separator()
         dpg.add_text("Video Settings")
         with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
@@ -119,36 +120,45 @@ class DPGApplication:
             with dpg.table_row():
                 dpg.add_text("Mode")
                 dpg.add_combo(("manual", "auto"), default_value="manual", tag="sync_mode", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
-            with dpg.table_row():
-                dpg.add_text("Threads")
-                dpg.add_input_int(tag="thread_count", default_value=2, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed(), width=-1)
-            with dpg.table_row():
-                dpg.add_text("Frame chunk")
-                dpg.add_input_int(tag="chunk_size", default_value=60, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed(), width=-1)
-            with dpg.table_row():
-                dpg.add_text("Timeline zoom")
-                dpg.add_input_float(tag="timeline_zoom", default_value=1.0, min_value=0.2, max_value=8.0, min_clamped=True, max_clamped=True, callback=lambda s, a, u: self.on_zoom_changed(), width=-1)
+        with dpg.collapsing_header(label="Advanced sync / performance", default_open=False):
+            with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp):
+                dpg.add_table_column(init_width_or_weight=0.42)
+                dpg.add_table_column(init_width_or_weight=0.58)
+                with dpg.table_row():
+                    dpg.add_text("Threads")
+                    dpg.add_input_int(tag="thread_count", default_value=2, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+                with dpg.table_row():
+                    dpg.add_text("Frame chunk")
+                    dpg.add_input_int(tag="chunk_size", default_value=60, min_value=1, min_clamped=True, callback=lambda s, a, u: self.on_settings_changed(), width=-1)
+                with dpg.table_row():
+                    dpg.add_text("Timeline zoom")
+                    dpg.add_input_float(tag="timeline_zoom", default_value=1.0, min_value=0.2, max_value=8.0, min_clamped=True, max_clamped=True, callback=lambda s, a, u: self.on_zoom_changed(), width=-1)
         dpg.add_separator()
         dpg.add_text("Preview")
         with dpg.group(horizontal=True):
             dpg.add_button(label="<< 1s", callback=lambda s, a, u: self.nudge_time(-1.0))
             dpg.add_button(label="1s >>", callback=lambda s, a, u: self.nudge_time(1.0))
-        dpg.add_text("Diagnostics / Logs")
-        dpg.add_input_text(tag="diagnostics_text", multiline=True, readonly=True, width=-1, height=280)
+        with dpg.collapsing_header(label="Diagnostics / Logs", default_open=False):
+            dpg.add_input_text(tag="diagnostics_text", multiline=True, readonly=True, width=-1, height=220)
 
     def build_center_panel(self) -> None:
-        dpg.add_text("Preview")
-        dpg.add_image(self.state.preview.texture_tag)
-        dpg.add_text("Transport")
-        with dpg.group(horizontal=True):
-            dpg.add_button(label="Play/Pause", callback=self.toggle_playback)
-            dpg.add_button(label="Stop", callback=self.stop_playback)
-            dpg.add_button(label="Frame -", callback=lambda s, a, u: self.nudge_time(-1.0 / max(self.state.transport_fps, 1.0)))
-            dpg.add_button(label="Frame +", callback=lambda s, a, u: self.nudge_time(1.0 / max(self.state.transport_fps, 1.0)))
-            dpg.add_text("00:00.00", tag="playback_label")
-        dpg.add_separator()
-        dpg.add_text("Timeline")
-        dpg.add_text("Click to seek. Drag lyric blocks horizontally to retime.")
+        dpg.add_text("Preview", color=(235, 235, 245))
+        with dpg.child_window(height=610, border=False):
+            with dpg.group(horizontal=False):
+                dpg.add_spacer(height=8)
+                dpg.add_image(self.state.preview.texture_tag)
+        with dpg.child_window(height=64, border=False):
+            dpg.add_text("Transport", color=(220, 220, 230))
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Play/Pause", callback=self.toggle_playback, width=86, height=30)
+                dpg.add_button(label="Stop", callback=self.stop_playback, width=54, height=30)
+                dpg.add_button(label="Frame -", callback=lambda s, a, u: self.nudge_time(-1.0 / max(self.state.transport_fps, 1.0)), width=62, height=30)
+                dpg.add_button(label="Frame +", callback=lambda s, a, u: self.nudge_time(1.0 / max(self.state.transport_fps, 1.0)), width=62, height=30)
+                dpg.add_text("00:00.00", tag="playback_label")
+                dpg.add_spacer(width=16)
+                dpg.add_text("Active line: none", tag="active_line_indicator", color=(180, 190, 210))
+        dpg.add_text("Timeline", color=(235, 235, 245))
+        dpg.add_text("Scrub, click, and drag lyric blocks to retime sync.", color=(170, 180, 195))
         dpg.add_image(self._timeline_texture_tag, tag="timeline_image")
 
     def build_right_panel(self) -> None:
@@ -166,7 +176,8 @@ class DPGApplication:
                 callback=self.on_bulk_lyrics_changed,
             )
         dpg.add_separator()
-        dpg.add_text("Selected Line")
+        dpg.add_text("Selected Line", color=(235, 235, 245))
+        dpg.add_text("Selected/active state syncs with preview and timeline.", tag="selected_line_status", color=(170, 180, 195), wrap=260)
         dpg.add_text("Index")
         dpg.add_input_int(tag="selected_index", readonly=True, width=-1)
         dpg.add_text("Start mm:ss")
@@ -389,16 +400,38 @@ class DPGApplication:
         self.state.preview.dirty = True
         self.refresh_selected_line_panel()
 
+    def _current_active_line_index(self) -> int:
+        if not self.state.project.lyrics:
+            return -1
+        current = self.state.playback_position
+        active_index = -1
+        for idx, line in enumerate(self.state.project.lyrics):
+            if self._parse_time(line.start_time) <= current:
+                active_index = idx
+            else:
+                break
+        return active_index
+
     def refresh_selected_line_panel(self) -> None:
         index = self.state.selected_line_index
+        active_index = self._current_active_line_index()
         dpg.set_value("selected_index", index)
         if 0 <= index < len(self.state.project.lyrics):
             line = self.state.project.lyrics[index]
             dpg.set_value("selected_time", line.start_time)
             dpg.set_value("selected_text", line.text)
+            state_text = f"Selected line {index + 1}"
+            if active_index == index:
+                state_text += " · currently active"
+            dpg.set_value("selected_line_status", state_text)
         else:
             dpg.set_value("selected_time", "")
             dpg.set_value("selected_text", "")
+            dpg.set_value("selected_line_status", "No line selected")
+        if 0 <= active_index < len(self.state.project.lyrics):
+            dpg.set_value("active_line_indicator", f"Active line: {self.state.project.lyrics[active_index].text[:42]}")
+        else:
+            dpg.set_value("active_line_indicator", "Active line: none")
 
     def select_line(self, index: int) -> None:
         self.state.selected_line_index = index
@@ -426,7 +459,6 @@ class DPGApplication:
         self.state.project.lyrics.append(LyricLine(start_time="00:00", text="New lyric line"))
         self.select_line(len(self.state.project.lyrics) - 1)
         self.refresh_lyrics_list()
-        self._restart_audio_if_needed()
         self._restart_audio_if_needed()
         self.state.preview.dirty = True
         self._timeline_dirty = True
@@ -536,12 +568,24 @@ class DPGApplication:
                 half = amp * ((wf_bottom - wf_top) / 2)
                 draw.line((x, y_mid - half, x, y_mid + half), fill=(110, 181, 255, 220), width=1)
 
-        for sec in range(int(scroll), int(scroll + visible_duration) + 1):
+        if visible_duration <= 12:
+            ruler_step = 1
+        elif visible_duration <= 35:
+            ruler_step = 2
+        elif visible_duration <= 90:
+            ruler_step = 5
+        else:
+            ruler_step = 10
+        start_marker = int(scroll // ruler_step) * ruler_step
+        for sec in range(start_marker, int(scroll + visible_duration) + ruler_step, ruler_step):
             x = int((sec - scroll) / visible_duration * width)
-            draw.line((x, 0, x, height), fill=(58, 63, 74, 140), width=1)
-            draw.text((x + 4, 4), self._format_time(sec), fill=(210, 210, 220, 220), font=timeline_font)
+            if x < 0 or x > width:
+                continue
+            draw.line((x, 0, x, height), fill=(58, 63, 74, 160), width=1)
+            draw.text((x + 6, 6), self._format_time(sec), fill=(220, 225, 235, 230), font=timeline_font)
 
-        track_y1, track_y2 = 126, 206
+        track_y1, track_y2 = 136, 250
+        active_index = self._current_active_line_index()
         for index, line in enumerate(self.state.project.lyrics):
             start_time = self._parse_time(line.start_time)
             if index + 1 < len(self.state.project.lyrics):
@@ -553,9 +597,21 @@ class DPGApplication:
                 continue
             x1 = max(0, int((start_time - scroll) / visible_duration * width))
             x2 = min(width - 1, int((end_time - scroll) / visible_duration * width))
-            fill = (91, 133, 190, 255) if index == self.state.selected_line_index else (66, 93, 125, 230)
-            draw.rounded_rectangle((x1, track_y1, max(x1 + 8, x2), track_y2), radius=8, fill=fill, outline=(190, 200, 215, 255), width=1)
-            draw.text((x1 + 8, track_y1 + 12), line.text[:36], fill=(255, 255, 255, 255), font=timeline_font)
+            if index == self.state.selected_line_index and index == active_index:
+                fill = (112, 160, 226, 255)
+                outline = (255, 226, 128, 255)
+            elif index == self.state.selected_line_index:
+                fill = (96, 136, 198, 255)
+                outline = (228, 236, 248, 255)
+            elif index == active_index:
+                fill = (78, 122, 182, 255)
+                outline = (255, 204, 102, 255)
+            else:
+                fill = (66, 93, 125, 230)
+                outline = (170, 184, 205, 255)
+            draw.rounded_rectangle((x1, track_y1, max(x1 + 14, x2), track_y2), radius=10, fill=fill, outline=outline, width=2)
+            text_value = line.text if len(line.text) <= 28 else f"{line.text[:25]}..."
+            draw.text((x1 + 10, track_y1 + 16), text_value, fill=(255, 255, 255, 255), font=timeline_font)
 
         play_x = int((self.state.playback_position - scroll) / visible_duration * width)
         draw.line((play_x, 0, play_x, height), fill=(255, 190, 64, 255), width=2)
