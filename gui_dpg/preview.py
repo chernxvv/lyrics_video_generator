@@ -7,7 +7,7 @@ import numpy as np
 
 from core.image_analysis import extract_dominant_palette
 from core.render import compose_preview_frame
-from core.validation import validate_project
+from core.audio import probe_audio_duration
 
 
 def ensure_preview_texture(tag: str, width: int, height: int) -> None:
@@ -22,7 +22,7 @@ def update_preview_texture(state) -> None:
     ensure_preview_texture(state.preview.texture_tag, state.preview.width, state.preview.height)
     image = None
     try:
-        duration = validate_project(state.project) if state.project.audio_path and state.project.image_path and state.project.lyrics else 0.0
+        duration = probe_audio_duration(Path(state.project.audio_path)) if state.project.audio_path else 0.0
         palette = extract_dominant_palette(Path(state.project.image_path)) if state.project.image_path else None
         if palette is not None:
             image = compose_preview_frame(

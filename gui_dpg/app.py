@@ -32,6 +32,8 @@ class DPGApplication:
         self._timeline_drag_index: int | None = None
         self._worker_lock = threading.Lock()
         self._timeline_drag_active = False
+        self._timeline_dirty = True
+        self._last_preview_render_at = 0.0
 
     def log(self, message: str) -> None:
         logger.info(message)
@@ -144,7 +146,14 @@ class DPGApplication:
             dpg.add_spacer(width=12)
             dpg.add_button(label="Import lyrics", callback=self.pick_lyrics)
         with dpg.child_window(height=360, border=True):
-            dpg.add_group(tag="lyrics_list")
+            dpg.add_input_text(
+                tag="lyrics_bulk_editor",
+                multiline=True,
+                width=-1,
+                height=336,
+                tab_input=True,
+                callback=self.on_bulk_lyrics_changed,
+            )
         dpg.add_separator()
         dpg.add_text("Selected Line")
         dpg.add_text("Index")
@@ -162,7 +171,13 @@ class DPGApplication:
         if not font_path.exists():
             return
         with dpg.font_registry():
-            default_font = dpg.add_font(str(font_path), 18)
+            with dpg.font(str(font_path), 18) as default_font:
+                if hasattr(dpg, "add_font_range_hint"):
+                    dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
+                    dpg.add_font_range_hint(dpg.mvFontRangeHint_Cyrillic)
+                if hasattr(dpg, "add_font_range"):
+                    dpg.add_font_range(0x0100, 0x024F)
+                    dpg.add_font_range(0x0400, 0x052F)
         dpg.bind_font(default_font)
 
     def _update_asset_buttons(self) -> None:
@@ -219,7 +234,7 @@ class DPGApplication:
         self._update_asset_buttons()
         self.refresh_lyrics_list()
         self.refresh_selected_line_panel()
-        self.refresh_preview()
+        self.refresh_preview(force=True)
         self.redraw_timeline()
         dpg.set_value("diagnostics_text", self.state.diagnostics.text)
 
@@ -243,13 +258,13 @@ class DPGApplication:
             dpg.set_value("orientation", "9:16" if p.orientation == "vertical" else "16:9")
             dpg.set_value("background_mode", p.background_mode)
             dpg.set_value("sync_mode", p.sync_mode)
+            dpg.set_value("lyrics_bulk_editor", "\n".join(line.text for line in p.lyrics))
             self._update_asset_buttons()
 
     def on_settings_changed(self, *args) -> None:
         self.sync_project_from_ui()
         self.state.preview.dirty = True
-        self.redraw_timeline()
-        self.refresh_preview()
+        self._timeline_dirty = True
 
     def on_zoom_changed(self, *args) -> None:
         self.state.zoom_level = float(dpg.get_value("timeline_zoom") or 1.0)
@@ -284,20 +299,39 @@ class DPGApplication:
         if not self.state.project.lyrics:
             self.state.project.lyrics = [LyricLine(start_time=f"{index:02d}:00", text=line) for index, line in enumerate(lines)]
         self.refresh_lyrics_list()
-        self.redraw_timeline()
-        self.refresh_preview()
+        self._timeline_dirty = True
+        self.state.preview.dirty = True
+        if lines and self.state.selected_line_index < 0:
+            self.state.selected_line_index = 0
+        self.refresh_selected_line_panel()
         self.set_status("Ready", f"Lyrics imported: {len(lines)} lines")
 
     def refresh_lyrics_list(self) -> None:
-        if not dpg.does_item_exist("lyrics_list"):
-            return
-        for child in dpg.get_item_children("lyrics_list", 1) or []:
-            dpg.delete_item(child)
-        for index, line in enumerate(self.state.project.lyrics):
-            with dpg.group(horizontal=True, parent="lyrics_list"):
-                dpg.add_selectable(label=str(index + 1), default_value=index == self.state.selected_line_index, callback=lambda s, a, u=index: self.select_line(u), width=34)
-                dpg.add_input_text(default_value=line.start_time, width=78, callback=lambda s, a, u=index: self._edit_lyric_time(u, a))
-                dpg.add_input_text(default_value=line.text, width=-1, callback=lambda s, a, u=index: self._edit_lyric_text(u, a))
+        if dpg.does_item_exist("lyrics_bulk_editor"):
+            current_text = "\n".join(line.text for line in self.state.project.lyrics)
+            if dpg.get_value("lyrics_bulk_editor") != current_text:
+                dpg.set_value("lyrics_bulk_editor", current_text)
+
+    def on_bulk_lyrics_changed(self, sender, app_data, user_data=None) -> None:
+        raw_lines = [line.rstrip() for line in (app_data or "").splitlines()]
+        kept_lines = [line for line in raw_lines if line.strip()]
+        existing = self.state.project.lyrics
+        rebuilt: list[LyricLine] = []
+        for index, text_value in enumerate(kept_lines):
+            if index < len(existing):
+                start_time = existing[index].start_time
+            else:
+                start_time = self._format_mmss(index * 5.0)
+            rebuilt.append(LyricLine(start_time=start_time, text=text_value))
+        self.state.project.lyrics = rebuilt
+        self.state.project.auto_sync_lyrics_text = "\n".join(kept_lines)
+        if rebuilt and self.state.selected_line_index < 0:
+            self.state.selected_line_index = 0
+        elif self.state.selected_line_index >= len(rebuilt):
+            self.state.selected_line_index = len(rebuilt) - 1
+        self._timeline_dirty = True
+        self.state.preview.dirty = True
+        self.refresh_selected_line_panel()
 
     def refresh_selected_line_panel(self) -> None:
         index = self.state.selected_line_index
@@ -320,21 +354,24 @@ class DPGApplication:
         self.state.project.lyrics[index] = LyricLine(start_time=value, text=self.state.project.lyrics[index].text)
         if self.state.selected_line_index == index:
             self.refresh_selected_line_panel()
-        self.redraw_timeline()
-        self.refresh_preview()
+        self.refresh_lyrics_list()
+        self._timeline_dirty = True
+        self.state.preview.dirty = True
 
     def _edit_lyric_text(self, index: int, value: str) -> None:
         self.state.project.lyrics[index] = LyricLine(start_time=self.state.project.lyrics[index].start_time, text=value)
         if self.state.selected_line_index == index:
             self.refresh_selected_line_panel()
-        self.redraw_timeline()
-        self.refresh_preview()
+        self.refresh_lyrics_list()
+        self._timeline_dirty = True
+        self.state.preview.dirty = True
 
     def add_line(self, *args) -> None:
         self.state.project.lyrics.append(LyricLine(start_time="00:00", text="New lyric line"))
         self.select_line(len(self.state.project.lyrics) - 1)
+        self.refresh_lyrics_list()
         self.state.preview.dirty = True
-        self.refresh_preview()
+        self._timeline_dirty = True
 
     def delete_selected_line(self, *args) -> None:
         index = self.state.selected_line_index
@@ -343,16 +380,16 @@ class DPGApplication:
             self.state.selected_line_index = min(index, len(self.state.project.lyrics) - 1)
             self.refresh_lyrics_list()
             self.refresh_selected_line_panel()
-            self.redraw_timeline()
-            self.refresh_preview()
+            self._timeline_dirty = True
+            self.state.preview.dirty = True
 
     def apply_selected_line_edits(self, *args) -> None:
         index = self.state.selected_line_index
         if 0 <= index < len(self.state.project.lyrics):
             self.state.project.lyrics[index] = LyricLine(start_time=dpg.get_value("selected_time"), text=dpg.get_value("selected_text"))
             self.refresh_lyrics_list()
-            self.redraw_timeline()
-            self.refresh_preview()
+            self._timeline_dirty = True
+            self.state.preview.dirty = True
 
     def _project_duration(self) -> float:
         return self.state.waveform.duration or max(5.0, len(self.state.project.lyrics) * 2.0)
@@ -360,8 +397,7 @@ class DPGApplication:
     def nudge_time(self, delta: float, *args) -> None:
         self.state.playback_position = max(0.0, min(self._project_duration(), self.state.playback_position + delta))
         self.state.preview.dirty = True
-        self.redraw_timeline()
-        self.refresh_preview()
+        self._timeline_dirty = True
 
     def toggle_playback(self, *args) -> None:
         self.state.transport_playing = not self.state.transport_playing
@@ -371,17 +407,22 @@ class DPGApplication:
         self.state.transport_playing = False
         self.state.playback_position = 0.0
         self.state.preview.dirty = True
-        self.redraw_timeline()
-        self.refresh_preview()
+        self._timeline_dirty = True
 
-    def refresh_preview(self, *args) -> None:
+    def refresh_preview(self, *args, force: bool = False) -> None:
+        dpg.set_value("playback_label", self._format_time(self.state.playback_position))
+        if not force and not self.state.preview.dirty:
+            return
+        now = time.perf_counter()
+        if not force and (now - self._last_preview_render_at) < 0.04:
+            return
         try:
             self.sync_project_from_ui()
             update_preview_texture(self.state)
+            self._last_preview_render_at = now
         except Exception as exc:  # noqa: BLE001
             self.state.last_error = str(exc)
             self.set_status("Error", f"Preview error: {exc}")
-        dpg.set_value("playback_label", self._format_time(self.state.playback_position))
 
     def rebuild_waveform(self, *args) -> None:
         audio_path = self.state.project.audio_path
@@ -394,7 +435,7 @@ class DPGApplication:
             self.state.waveform.samples = samples
             self.state.waveform.duration = duration
             self.state.waveform.ready = True
-            self.redraw_timeline()
+            self._timeline_dirty = True
             self.set_status("Ready", f"Waveform rebuilt ({len(samples)} bins)")
         except Exception as exc:  # noqa: BLE001
             self.set_status("Error", f"Waveform failed: {exc}")
@@ -486,8 +527,7 @@ class DPGApplication:
             if self._timeline_drag_index is not None:
                 self.select_line(self._timeline_drag_index)
         self.state.preview.dirty = True
-        self.redraw_timeline()
-        self.refresh_preview()
+        self._timeline_dirty = True
 
     def _line_index_at_mouse(self) -> int | None:
         mouse = dpg.get_mouse_pos(local=False)
@@ -527,8 +567,8 @@ class DPGApplication:
         self.state.playback_position = t
         self.refresh_selected_line_panel()
         self.refresh_lyrics_list()
-        self.redraw_timeline()
-        self.refresh_preview()
+        self._timeline_dirty = True
+        self.state.preview.dirty = True
 
     def _on_timeline_drag_release(self, sender, app_data):
         self._timeline_drag_index = None
@@ -619,10 +659,13 @@ class DPGApplication:
                 if self.state.playback_position >= self._project_duration():
                     self.state.transport_playing = False
                 self.state.preview.dirty = True
-                self.redraw_timeline()
-                self.refresh_preview()
+                self._timeline_dirty = True
             last = now
             self._update_timeline_interaction()
+            if self._timeline_dirty:
+                self.redraw_timeline()
+                self._timeline_dirty = False
+            self.refresh_preview()
             dpg.render_dearpygui_frame()
         dpg.destroy_context()
 
