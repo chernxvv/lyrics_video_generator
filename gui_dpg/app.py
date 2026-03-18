@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from core.auto_sync import (
     AutoSyncError,
@@ -40,6 +42,9 @@ class DPGApplication:
         self._timeline_width = 900
         self._timeline_height = 240
         self._last_timeline_render_at = 0.0
+        self._audio_process: subprocess.Popen | None = None
+        self._playback_anchor: float = 0.0
+        self._playback_start_position: float = 0.0
 
     def log(self, message: str) -> None:
         logger.info(message)
@@ -171,6 +176,36 @@ class DPGApplication:
         with dpg.group(horizontal=True):
             dpg.add_button(label="Add line", callback=self.add_line)
             dpg.add_button(label="Delete line", callback=self.delete_selected_line)
+
+    def _stop_audio_playback(self) -> None:
+        if self._audio_process is None:
+            return
+        if self._audio_process.poll() is None:
+            self._audio_process.terminate()
+        self._audio_process = None
+
+    def _start_audio_playback(self) -> None:
+        self._stop_audio_playback()
+        audio_path = self.state.project.audio_path
+        if not audio_path or shutil.which("ffplay") is None:
+            return
+        start_position = max(0.0, self.state.playback_position)
+        cmd = [
+            "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
+            "-ss", f"{start_position:.3f}",
+            "-sync", "audio",
+            str(audio_path),
+        ]
+        try:
+            self._audio_process = subprocess.Popen(cmd)
+            self._playback_anchor = time.perf_counter()
+            self._playback_start_position = start_position
+        except OSError:
+            self._audio_process = None
+
+    def _restart_audio_if_needed(self) -> None:
+        if self.state.transport_playing:
+            self._start_audio_playback()
 
     def _ensure_timeline_texture(self) -> None:
         if dpg.does_item_exist(self._timeline_texture_tag):
@@ -391,6 +426,8 @@ class DPGApplication:
         self.state.project.lyrics.append(LyricLine(start_time="00:00", text="New lyric line"))
         self.select_line(len(self.state.project.lyrics) - 1)
         self.refresh_lyrics_list()
+        self._restart_audio_if_needed()
+        self._restart_audio_if_needed()
         self.state.preview.dirty = True
         self._timeline_dirty = True
 
@@ -417,15 +454,23 @@ class DPGApplication:
 
     def nudge_time(self, delta: float, *args) -> None:
         self.state.playback_position = max(0.0, min(self._project_duration(), self.state.playback_position + delta))
+        self._restart_audio_if_needed()
         self.state.preview.dirty = True
         self._timeline_dirty = True
 
     def toggle_playback(self, *args) -> None:
         self.state.transport_playing = not self.state.transport_playing
+        if self.state.transport_playing:
+            self._start_audio_playback()
+        else:
+            if self._playback_anchor:
+                self.state.playback_position = self._playback_start_position + (time.perf_counter() - self._playback_anchor)
+            self._stop_audio_playback()
         self.set_status("Ready", "Playback running" if self.state.transport_playing else "Playback paused")
 
     def stop_playback(self, *args) -> None:
         self.state.transport_playing = False
+        self._stop_audio_playback()
         self.state.playback_position = 0.0
         self.state.preview.dirty = True
         self._timeline_dirty = True
@@ -474,6 +519,8 @@ class DPGApplication:
 
         image = Image.new("RGBA", (width, height), (25, 29, 36, 255))
         draw = ImageDraw.Draw(image)
+        timeline_font_path = Path(__file__).resolve().parent.parent / "assets" / "fonts" / "NotoSans-Regular.ttf"
+        timeline_font = ImageFont.truetype(str(timeline_font_path), 14) if timeline_font_path.exists() else ImageFont.load_default()
         draw.rectangle((0, 0, width - 1, height - 1), outline=(80, 90, 110, 255), width=1)
 
         wf_top = 24
@@ -492,7 +539,7 @@ class DPGApplication:
         for sec in range(int(scroll), int(scroll + visible_duration) + 1):
             x = int((sec - scroll) / visible_duration * width)
             draw.line((x, 0, x, height), fill=(58, 63, 74, 140), width=1)
-            draw.text((x + 4, 4), self._format_time(sec), fill=(210, 210, 220, 220))
+            draw.text((x + 4, 4), self._format_time(sec), fill=(210, 210, 220, 220), font=timeline_font)
 
         track_y1, track_y2 = 126, 206
         for index, line in enumerate(self.state.project.lyrics):
@@ -508,7 +555,7 @@ class DPGApplication:
             x2 = min(width - 1, int((end_time - scroll) / visible_duration * width))
             fill = (91, 133, 190, 255) if index == self.state.selected_line_index else (66, 93, 125, 230)
             draw.rounded_rectangle((x1, track_y1, max(x1 + 8, x2), track_y2), radius=8, fill=fill, outline=(190, 200, 215, 255), width=1)
-            draw.text((x1 + 8, track_y1 + 12), line.text[:36], fill=(255, 255, 255, 255))
+            draw.text((x1 + 8, track_y1 + 12), line.text[:36], fill=(255, 255, 255, 255), font=timeline_font)
 
         play_x = int((self.state.playback_position - scroll) / visible_duration * width)
         draw.line((play_x, 0, play_x, height), fill=(255, 190, 64, 255), width=2)
@@ -684,10 +731,16 @@ class DPGApplication:
         while dpg.is_dearpygui_running():
             now = time.perf_counter()
             if self.state.transport_playing:
-                dt = now - last
-                self.state.playback_position = min(self._project_duration(), self.state.playback_position + dt)
+                if self._audio_process is not None and self._audio_process.poll() is not None:
+                    self.state.transport_playing = False
+                    self._audio_process = None
+                self.state.playback_position = min(
+                    self._project_duration(),
+                    self._playback_start_position + (now - self._playback_anchor),
+                )
                 if self.state.playback_position >= self._project_duration():
                     self.state.transport_playing = False
+                    self._stop_audio_playback()
                 self.state.preview.dirty = True
                 self._timeline_dirty = True
             last = now

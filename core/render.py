@@ -331,6 +331,7 @@ def compose_preview_frame(
 ):
     base_width, base_height = get_base_canvas(project.orientation)
     scale_factor = _compute_uniform_scale(base_width, base_height, width, height)
+    layout = compute_layout(width, height, project.orientation)
     sorted_lines, start_times = prepare_timeline(project.lyrics)
     current_index = active_line_index_precomputed(start_times, current_time)
     background = build_background_frame(
@@ -342,15 +343,58 @@ def compose_preview_frame(
         beat_result=None,
     )
     image = Image.fromarray(background, mode="RGB").convert("RGBA")
+
+    cover_x1, cover_y1, cover_x2, cover_y2 = _scale_box(layout.cover_box, scale_factor)
+    cover_w = max(1, cover_x2 - cover_x1)
+    cover_h = max(1, cover_y2 - cover_y1)
+    if project.image_path and Path(project.image_path).exists():
+        cover = Image.open(project.image_path).convert("RGBA")
+        src_ratio = cover.width / max(1, cover.height)
+        dst_ratio = cover_w / max(1, cover_h)
+        if src_ratio > dst_ratio:
+            new_h = cover_h
+            new_w = int(round(new_h * src_ratio))
+        else:
+            new_w = cover_w
+            new_h = int(round(new_w / max(src_ratio, 1e-6)))
+        cover = cover.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        left = max(0, (new_w - cover_w) // 2)
+        top = max(0, (new_h - cover_h) // 2)
+        cover = cover.crop((left, top, left + cover_w, top + cover_h))
+        image.alpha_composite(cover, (cover_x1, cover_y1))
+
     draw = ImageDraw.Draw(image, "RGBA")
-    font_regular = _load_font(_scale_value(40, scale_factor), LYRICS_FONT_REGULAR_FILE)
-    font_bold = _load_font(_scale_value(42, scale_factor), LYRICS_FONT_BOLD_FILE)
+    meta_font = _load_font(_scale_value(36 if project.orientation == "vertical" else 26, scale_factor), META_FONT_FILE)
+    title_font = _load_font(_scale_value(32 if project.orientation == "vertical" else 24, scale_factor), META_FONT_FILE)
+    separator_y = _scale_value((layout.artist_y + layout.title_y) // 2, scale_factor, minimum=0)
+    artist_y = _scale_value(layout.artist_y, scale_factor, minimum=0)
+    title_y = _scale_value(layout.title_y, scale_factor, minimum=0)
+    date_y = _scale_value(layout.date_y, scale_factor, minimum=0)
+
+    def _draw_centered_text(y: int, value: str, font, fill=(255, 255, 255, 255)):
+        if not value.strip():
+            return
+        bbox = draw.textbbox((0, 0), value, font=font)
+        text_w = bbox[2] - bbox[0]
+        x = max(0, (width - text_w) // 2)
+        draw.text((x, y), value, font=font, fill=fill)
+
+    _draw_centered_text(artist_y, project.artist, meta_font)
+    draw.rounded_rectangle((width // 2 - _scale_value(12, scale_factor), separator_y, width // 2 + _scale_value(12, scale_factor), separator_y + _scale_value(2, scale_factor)), radius=1, fill=(255,255,255,255))
+    _draw_centered_text(title_y, project.title, title_font)
+    _draw_centered_text(date_y, project.release_date, _load_font(_scale_value(22 if project.orientation == "vertical" else 18, scale_factor), META_FONT_FILE), fill=(230,230,230,255))
+
+    lyrics_box = _scale_box(layout.lyrics_box, scale_factor)
+    lyrics_w = lyrics_box[2] - lyrics_box[0]
+    lyrics_h = lyrics_box[3] - lyrics_box[1]
+    font_regular = _load_font(_scale_value(34, scale_factor), LYRICS_FONT_REGULAR_FILE)
+    font_bold = _load_font(_scale_value(36, scale_factor), LYRICS_FONT_BOLD_FILE)
     line_gap, block_gap = _lyrics_spacing(scale_factor)
     overlay = _build_lyrics_overlay(
         sorted_lines,
         current_index,
-        width,
-        height,
+        lyrics_w,
+        lyrics_h,
         font_regular,
         font_bold,
         project.orientation,
@@ -358,7 +402,7 @@ def compose_preview_frame(
         block_gap,
     )
     if overlay is not None:
-        image.alpha_composite(overlay)
+        image.alpha_composite(overlay, (lyrics_box[0], lyrics_box[1]))
     return image
 
 
