@@ -75,6 +75,8 @@ class DPGApplication:
         self.refresh_all()
         if hasattr(dpg, "set_viewport_drop_callback"):
             dpg.set_viewport_drop_callback(self.handle_file_drop)
+        if hasattr(dpg, "set_viewport_resize_callback"):
+            dpg.set_viewport_resize_callback(self._on_viewport_resize)
         dpg.show_viewport()
 
     def build_left_panel(self) -> None:
@@ -118,10 +120,6 @@ class DPGApplication:
                 with dpg.table_row():
                     dpg.add_text("Profile")
                     dpg.add_combo(("Preview", "Final"), default_value="Final", tag="render_profile", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
-                with dpg.table_row():
-                    dpg.add_text("Sync mode")
-                    dpg.add_combo(("manual", "auto"), default_value="manual", tag="sync_mode", callback=lambda s, a, u: self.on_settings_changed(), width=-1)
-
             dpg.add_separator()
             dpg.add_text("Sync", color=(235, 235, 245))
             dpg.add_text("3. Auto-sync if you want a fast starting point.", color=(170, 180, 195))
@@ -162,7 +160,7 @@ class DPGApplication:
         with dpg.child_window(height=610, border=False):
             with dpg.group(horizontal=False):
                 dpg.add_spacer(height=8)
-                dpg.add_image(self.state.preview.texture_tag)
+                dpg.add_image(self.state.preview.texture_tag, tag="preview_image", width=self.state.preview.width, height=self.state.preview.height)
         with dpg.child_window(height=64, border=False):
             dpg.add_text("Transport", color=(220, 220, 230))
             with dpg.group(horizontal=True):
@@ -175,7 +173,7 @@ class DPGApplication:
                 dpg.add_text("Active line: none", tag="active_line_indicator", color=(180, 190, 210))
         dpg.add_text("Timeline", color=(235, 235, 245))
         dpg.add_text("Scrub, click, and drag lyric blocks to retime sync.", color=(170, 180, 195))
-        dpg.add_image(self._timeline_texture_tag, tag="timeline_image")
+        dpg.add_image(self._timeline_texture_tag, tag="timeline_image", width=self._timeline_width, height=self._timeline_height)
 
     def build_right_panel(self) -> None:
         with dpg.group(horizontal=True):
@@ -204,6 +202,23 @@ class DPGApplication:
             dpg.add_button(label="Add line", callback=self.add_line)
             dpg.add_button(label="Delete line", callback=self.delete_selected_line)
 
+    def _on_viewport_resize(self, sender=None, app_data=None) -> None:
+        if isinstance(app_data, (list, tuple)) and len(app_data) >= 2:
+            viewport_w, viewport_h = int(app_data[0]), int(app_data[1])
+        else:
+            viewport_w, viewport_h = 1680, 960
+        self._timeline_width = max(720, min(1400, viewport_w - 620))
+        self._timeline_height = max(260, min(420, int(viewport_h * 0.30)))
+        preview_size = max(420, min(760, int(viewport_h * 0.58), viewport_w - 760))
+        self.state.preview.width = preview_size
+        self.state.preview.height = preview_size
+        if dpg.does_item_exist("preview_image"):
+            dpg.configure_item("preview_image", width=preview_size, height=preview_size)
+        if dpg.does_item_exist("timeline_image"):
+            dpg.configure_item("timeline_image", width=self._timeline_width, height=self._timeline_height)
+        self._timeline_dirty = True
+        self.state.preview.dirty = True
+
     def _stop_audio_playback(self) -> None:
         if self._audio_process is None:
             return
@@ -211,28 +226,30 @@ class DPGApplication:
             self._audio_process.terminate()
         self._audio_process = None
 
-    def _start_audio_playback(self) -> None:
+    def _start_audio_playback(self) -> bool:
         self._stop_audio_playback()
         audio_path = self.state.project.audio_path
         if not audio_path or shutil.which("ffplay") is None:
-            return
+            return False
         start_position = max(0.0, self.state.playback_position)
         cmd = [
             "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
             "-ss", f"{start_position:.3f}",
             "-sync", "audio",
-            str(audio_path),
+            "-i", str(audio_path),
         ]
         try:
             self._audio_process = subprocess.Popen(cmd)
             self._playback_anchor = time.perf_counter()
             self._playback_start_position = start_position
+            return True
         except OSError:
             self._audio_process = None
+            return False
 
     def _restart_audio_if_needed(self) -> None:
-        if self.state.transport_playing:
-            self._start_audio_playback()
+        if self.state.transport_playing and not self._start_audio_playback():
+            self.state.transport_playing = False
 
     def _ensure_timeline_texture(self) -> None:
         if dpg.does_item_exist(self._timeline_texture_tag):
@@ -327,7 +344,8 @@ class DPGApplication:
         p.orientation = "vertical" if dpg.get_value("orientation") == "9:16" else "horizontal"
         self._sync_preview_geometry()
         p.background_mode = dpg.get_value("background_mode")
-        p.sync_mode = dpg.get_value("sync_mode")
+        if dpg.does_item_exist("sync_mode"):
+            p.sync_mode = dpg.get_value("sync_mode")
         self.state.render_settings.thread_count = max(1, int(dpg.get_value("thread_count") or 1))
         self.state.render_settings.frame_chunk_size = max(1, int(dpg.get_value("chunk_size") or 1))
 
@@ -339,7 +357,8 @@ class DPGApplication:
             dpg.set_value("release_date", p.release_date)
             dpg.set_value("orientation", "9:16" if p.orientation == "vertical" else "16:9")
             dpg.set_value("background_mode", p.background_mode)
-            dpg.set_value("sync_mode", p.sync_mode)
+            if dpg.does_item_exist("sync_mode"):
+                dpg.set_value("sync_mode", p.sync_mode)
             dpg.set_value("lyrics_bulk_editor", "\n".join(line.text for line in p.lyrics))
             self._update_asset_buttons()
 
@@ -509,7 +528,10 @@ class DPGApplication:
     def toggle_playback(self, *args) -> None:
         self.state.transport_playing = not self.state.transport_playing
         if self.state.transport_playing:
-            self._start_audio_playback()
+            if not self._start_audio_playback():
+                self.state.transport_playing = False
+                self.set_status("Error", "Audio playback unavailable (ffplay not found or failed to start)")
+                return
         else:
             if self._playback_anchor:
                 self.state.playback_position = self._playback_start_position + (time.perf_counter() - self._playback_anchor)
@@ -741,6 +763,7 @@ class DPGApplication:
                 self.set_status("Auto-sync running", "Analyzing vocals")
                 lines = auto_sync_lyrics(str(audio_path), text)
                 self.state.project.lyrics = lines
+                self.state.project.sync_mode = "auto"
                 self.state.project.lyrics_autofilled = True
                 self.state.project.auto_sync_audio_path = str(audio_path)
                 self.state.selected_line_index = 0 if lines else -1

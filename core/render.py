@@ -364,12 +364,29 @@ def compose_preview_frame(
         image.alpha_composite(cover, (cover_x1, cover_y1))
 
     draw = ImageDraw.Draw(image, "RGBA")
-    meta_font = _load_font(_scale_value(36 if project.orientation == "vertical" else 26, scale_factor), META_FONT_FILE)
-    title_font = _load_font(_scale_value(32 if project.orientation == "vertical" else 24, scale_factor), META_FONT_FILE)
-    separator_y = _scale_value((layout.artist_y + layout.title_y) // 2, scale_factor, minimum=0)
+    if project.orientation == "horizontal":
+        artist_base_size = 37
+        title_base_size = 32
+        date_base_size = 24
+    else:
+        artist_base_size = 58
+        title_base_size = 52
+        date_base_size = 36
+    meta_font = _load_font(_scale_value(artist_base_size, scale_factor), META_FONT_FILE)
+    title_font = _load_font(_scale_value(title_base_size, scale_factor), META_FONT_FILE)
+    date_font = _load_font(_scale_value(date_base_size, scale_factor), META_FONT_FILE)
+    separator_h = _scale_value(3, scale_factor)
+    min_separator_margin = _scale_value(8, scale_factor)
     artist_y = _scale_value(layout.artist_y, scale_factor, minimum=0)
     title_y = _scale_value(layout.title_y, scale_factor, minimum=0)
     date_y = _scale_value(layout.date_y, scale_factor, minimum=0)
+    artist_bottom_y = artist_y + _scale_value(artist_base_size, scale_factor)
+    title_top_y = title_y
+    free_space = max(0, title_top_y - artist_bottom_y)
+    centered_separator_y = artist_bottom_y + (free_space // 2) - (separator_h // 2)
+    min_separator_y = artist_bottom_y + min_separator_margin
+    max_separator_y = title_top_y - min_separator_margin - separator_h
+    separator_y = max(0, centered_separator_y) if max_separator_y < min_separator_y else min(max(centered_separator_y, min_separator_y), max_separator_y)
 
     def _draw_centered_text(y: int, value: str, font, fill=(255, 255, 255, 255)):
         if not value.strip():
@@ -380,9 +397,9 @@ def compose_preview_frame(
         draw.text((x, y), value, font=font, fill=fill)
 
     _draw_centered_text(artist_y, project.artist, meta_font)
-    draw.rounded_rectangle((width // 2 - _scale_value(12, scale_factor), separator_y, width // 2 + _scale_value(12, scale_factor), separator_y + _scale_value(2, scale_factor)), radius=1, fill=(255,255,255,255))
+    draw.rounded_rectangle((width // 2 - _scale_value(10, scale_factor), separator_y, width // 2 + _scale_value(10, scale_factor), separator_y + separator_h), radius=1, fill=(255,255,255,255))
     _draw_centered_text(title_y, project.title, title_font)
-    _draw_centered_text(date_y, project.release_date, _load_font(_scale_value(22 if project.orientation == "vertical" else 18, scale_factor), META_FONT_FILE), fill=(230,230,230,255))
+    _draw_centered_text(date_y, project.release_date, date_font, fill=(230,230,230,255))
 
     lyrics_box = _scale_box(layout.lyrics_box, scale_factor)
     lyrics_w = lyrics_box[2] - lyrics_box[0]
