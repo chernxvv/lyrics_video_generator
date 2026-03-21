@@ -227,6 +227,7 @@ Pipeline details:
 - Demucs is attempted first; if `vocals` stem is available, transcription uses vocals, otherwise source falls back to full mix.
 - WhisperX transcription + alignment provide word-level timestamps.
 - Line start timestamps are computed by separate post-processing (`core/line_alignment.py`) based on words (not raw `segment.start`).
+- When alignment misses the first token(s) of a line, line post-processing estimates the true line start from later matched words using local speech-rate heuristics instead of anchoring strictly to the first detected matched word.
 - UX heuristics include `pre-roll`, `min_line_gap`, false-start protection, and fallback strategies for weakly recognized lines.
 - If WhisperX is unavailable or alignment fails, pipeline falls back to tuned librosa backend (onset/energy improvements).
 

@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
 
 from core.auto_sync import AutoSyncError, _split_lyrics_text, auto_sync_lyrics
 from models import LyricLine
+from core.line_alignment import LineAlignmentConfig, RecognizedWord, align_lyric_lines
 
 
 def test_split_lyrics_text_strips_and_ignores_empty_lines() -> None:
@@ -180,3 +181,33 @@ def test_auto_sync_librosa_raises_on_analysis_exception(monkeypatch: pytest.Monk
 
     with pytest.raises(AutoSyncError, match="Ошибка анализа аудио librosa"):
         mod._auto_sync_librosa("fake.wav", ["line 1", "line 2"])  # noqa: SLF001
+
+
+def test_align_lyric_lines_recovers_line_start_when_first_tokens_are_missing() -> None:
+    lyric_lines = [
+        "Это стало ужасно",
+        "Не резко, а медленно",
+        "Как будто мир стирает краски небрежно",
+    ]
+    recognized = [
+        RecognizedWord(raw="это", normalized="это", start=0.00, end=0.20, confidence=0.99, index=0),
+        RecognizedWord(raw="стало", normalized="стало", start=0.30, end=0.50, confidence=0.99, index=1),
+        RecognizedWord(raw="ужасно", normalized="ужасно", start=0.60, end=0.80, confidence=0.99, index=2),
+        RecognizedWord(raw="резко", normalized="резко", start=1.20, end=1.40, confidence=0.99, index=3),
+        RecognizedWord(raw="медленно", normalized="медленно", start=1.80, end=2.00, confidence=0.99, index=4),
+        RecognizedWord(raw="будто", normalized="будто", start=2.40, end=2.60, confidence=0.99, index=5),
+        RecognizedWord(raw="мир", normalized="мир", start=2.70, end=2.90, confidence=0.99, index=6),
+        RecognizedWord(raw="стирает", normalized="стирает", start=3.00, end=3.20, confidence=0.99, index=7),
+        RecognizedWord(raw="краски", normalized="краски", start=3.30, end=3.50, confidence=0.99, index=8),
+        RecognizedWord(raw="небрежно", normalized="небрежно", start=3.60, end=3.80, confidence=0.99, index=9),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(russian_mode=True),
+    )
+
+    assert result[0].raw_start_seconds == pytest.approx(0.0, abs=0.01)
+    assert result[1].raw_start_seconds == pytest.approx(0.90, abs=0.01)
+    assert result[2].raw_start_seconds == pytest.approx(2.10, abs=0.01)

@@ -130,6 +130,12 @@ class _FlatTextToken:
     token_idx_in_line: int
 
 
+@dataclass(slots=True)
+class _TokenMatch:
+    token_idx_in_line: int
+    recognized_idx: int
+
+
 def normalize_for_matching(text: str, *, russian_mode: bool = False) -> str:
     normalized = unicodedata.normalize("NFKC", text).lower()
     normalized = normalized.replace("ё", "е") if russian_mode else normalized
@@ -234,6 +240,51 @@ def _build_flat_text_tokens(lyric_lines: list[str], line_tokens: list[list[str]]
     return flat
 
 
+def _estimate_word_step_seconds(recognized_words: list[RecognizedWord], match_pairs: list[_TokenMatch] | None = None) -> float:
+    candidate_steps: list[float] = []
+
+    if match_pairs and len(match_pairs) >= 2:
+        ordered = sorted(match_pairs, key=lambda item: item.token_idx_in_line)
+        for left, right in zip(ordered, ordered[1:]):
+            token_gap = right.token_idx_in_line - left.token_idx_in_line
+            if token_gap <= 0:
+                continue
+            left_time = recognized_words[left.recognized_idx].start
+            right_time = recognized_words[right.recognized_idx].start
+            if left_time is None or right_time is None or right_time <= left_time:
+                continue
+            candidate_steps.append((float(right_time) - float(left_time)) / token_gap)
+
+    if not candidate_steps:
+        for prev, curr in zip(recognized_words, recognized_words[1:]):
+            if prev.start is None or curr.start is None or curr.start <= prev.start:
+                continue
+            candidate_steps.append(float(curr.start) - float(prev.start))
+
+    if not candidate_steps:
+        return 0.24
+
+    median_step = sorted(candidate_steps)[len(candidate_steps) // 2]
+    return min(0.8, max(0.08, median_step))
+
+
+def _estimate_line_raw_start(
+    recognized_words: list[RecognizedWord],
+    match_pairs: list[_TokenMatch],
+) -> tuple[float | None, int]:
+    if not match_pairs:
+        return None, -1
+
+    earliest = min(match_pairs, key=lambda item: (item.token_idx_in_line, item.recognized_idx))
+    anchor_time = recognized_words[earliest.recognized_idx].start
+    if anchor_time is None:
+        return None, earliest.recognized_idx
+
+    word_step = _estimate_word_step_seconds(recognized_words, match_pairs)
+    estimated_start = max(0.0, float(anchor_time) - (earliest.token_idx_in_line * word_step))
+    return estimated_start, earliest.recognized_idx
+
+
 def _global_align_tokens(
     flat_tokens: list[_FlatTextToken],
     recognized_words: list[RecognizedWord],
@@ -242,7 +293,7 @@ def _global_align_tokens(
     first_word_time: float,
     last_word_time: float,
     total_lines: int,
-) -> dict[int, list[int]]:
+) -> dict[int, list[_TokenMatch]]:
     n = len(flat_tokens)
     m = len(recognized_words)
     if n == 0 or m == 0:
@@ -288,7 +339,7 @@ def _global_align_tokens(
                 dp[i][j] = left_score
                 ptr[i][j] = 3
 
-    line_matches: dict[int, list[int]] = {}
+    line_matches: dict[int, list[_TokenMatch]] = {}
     i, j = n, m
     while i > 0 and j > 0:
         p = ptr[i][j]
@@ -296,7 +347,9 @@ def _global_align_tokens(
             ft = flat_tokens[i - 1]
             rw = recognized_words[j - 1]
             if ft.token == rw.normalized:
-                line_matches.setdefault(ft.line_idx, []).append(j - 1)
+                line_matches.setdefault(ft.line_idx, []).append(
+                    _TokenMatch(token_idx_in_line=ft.token_idx_in_line, recognized_idx=j - 1)
+                )
             i -= 1
             j -= 1
         elif p == 2:
@@ -305,7 +358,13 @@ def _global_align_tokens(
             j -= 1
 
     for line_idx, values in list(line_matches.items()):
-        line_matches[line_idx] = sorted(set(values))
+        dedup: dict[tuple[int, int], _TokenMatch] = {}
+        for item in values:
+            dedup[(item.token_idx_in_line, item.recognized_idx)] = item
+        line_matches[line_idx] = sorted(
+            dedup.values(),
+            key=lambda item: (item.token_idx_in_line, item.recognized_idx),
+        )
 
     return line_matches
 
@@ -322,33 +381,33 @@ def _score_candidate(
     cursor_index: int,
     cursor_span_words: int,
     cursor_prior_weight: float,
-) -> tuple[float, list[int], int]:
+) -> tuple[float, list[_TokenMatch], int]:
     if not line_tokens:
         return 0.0, [], 0
     end_idx = min(len(recognized), start_idx + window_size)
     rec_tokens = [w.normalized for w in recognized[start_idx:end_idx]]
 
-    matches: list[int] = []
+    matches: list[_TokenMatch] = []
     cursor = 0
-    for tok in line_tokens:
+    for token_idx, tok in enumerate(line_tokens):
         try:
             rel = rec_tokens.index(tok, cursor)
         except ValueError:
             continue
         abs_idx = start_idx + rel
-        matches.append(abs_idx)
+        matches.append(_TokenMatch(token_idx_in_line=token_idx, recognized_idx=abs_idx))
         cursor = rel + 1
 
     coverage = len(matches) / max(1, len(line_tokens))
     if not matches:
         return 0.0, [], 0
 
-    first_rel = max(0, matches[0] - start_idx)
+    first_rel = max(0, matches[0].recognized_idx - start_idx)
     compactness = 1.0 - (first_rel / max(1, window_size))
     score = 0.75 * coverage + 0.25 * compactness
 
-    if expected_time is not None and 0 <= matches[0] < len(recognized):
-        first_word_time = recognized[matches[0]].start
+    if expected_time is not None and 0 <= matches[0].recognized_idx < len(recognized):
+        first_word_time = recognized[matches[0].recognized_idx].start
         if first_word_time is not None and time_span > 0:
             dist = abs(float(first_word_time) - expected_time)
             time_score = max(0.0, 1.0 - (dist / time_span))
@@ -388,7 +447,7 @@ def _context_score_candidate(
         return base
 
     score = base
-    anchor_pos = base_matches[0]
+    anchor_pos = base_matches[0].recognized_idx
     for step in range(1, cfg.lookahead_lines + 1):
         li = line_idx + step
         if li >= len(line_tokens_all):
@@ -413,8 +472,9 @@ def _context_score_candidate(
             score -= cfg.lookahead_weight * 0.9
             continue
         jump_ms = 0.0
-        if recognized_words[next_matches[0]].start is not None and recognized_words[anchor_pos].start is not None:
-            jump_ms = max(0.0, (recognized_words[next_matches[0]].start - recognized_words[anchor_pos].start) * 1000.0)
+        next_anchor = next_matches[0].recognized_idx
+        if recognized_words[next_anchor].start is not None and recognized_words[anchor_pos].start is not None:
+            jump_ms = max(0.0, (recognized_words[next_anchor].start - recognized_words[anchor_pos].start) * 1000.0)
         if jump_ms > cfg.max_context_jump_ms:
             score -= cfg.lookahead_weight * 1.4
         score += cfg.lookahead_weight * next_s / float(step)
@@ -505,7 +565,7 @@ def _align_lyric_lines_greedy(
         local_lookahead = max(20, cfg.max_candidate_lookahead_words)
         local_end = min(len(recognized_words), word_cursor + local_lookahead)
 
-        candidates: list[tuple[float, int, list[int]]] = []
+        candidates: list[tuple[float, int, list[_TokenMatch]]] = []
         for ridx in range(word_cursor, local_end):
             score, matches, _ = _score_candidate(
                 tokens,
@@ -528,7 +588,7 @@ def _align_lyric_lines_greedy(
         if not top_candidates:
             best_score = -1.0
             best_start_idx = -1
-            best_matches: list[int] = []
+            best_matches: list[_TokenMatch] = []
         else:
             local_best_score, local_best_start_idx, local_best_matches = top_candidates[0]
             selected = (local_best_score, local_best_start_idx, local_best_matches)
@@ -566,8 +626,8 @@ def _align_lyric_lines_greedy(
         status = "matched"
 
         if best_matches:
-            for pos, matched_idx in enumerate(best_matches[: max(1, cfg.max_anchor_search_words)]):
-                rec_word = recognized_words[matched_idx]
+            for pos, match in enumerate(best_matches[: max(1, cfg.max_anchor_search_words)]):
+                rec_word = recognized_words[match.recognized_idx]
                 token = rec_word.normalized
                 short = len(token) < cfg.min_anchor_word_length
                 stop = cfg.prefer_non_stopword_anchor and _is_stopword(token, russian_mode=cfg.russian_mode)
@@ -575,9 +635,10 @@ def _align_lyric_lines_greedy(
                 suspicious = short or stop or weak_conf
                 if suspicious and pos + 1 < len(best_matches):
                     continue
-                anchor_idx = matched_idx
+                anchor_idx = match.recognized_idx
                 anchor_word = rec_word.raw
-                raw_start = rec_word.start
+                estimated_start, _ = _estimate_line_raw_start(recognized_words, best_matches)
+                raw_start = estimated_start if estimated_start is not None else rec_word.start
                 if pos > 0:
                     non_first_anchor_count += 1
                 break
@@ -587,7 +648,7 @@ def _align_lyric_lines_greedy(
             status = "fallback"
             confidence = min(confidence, 0.35)
             if best_matches and not (is_low_info_line and confidence < cfg.min_local_match_score):
-                candidate = recognized_words[best_matches[0]].start
+                candidate, _ = _estimate_line_raw_start(recognized_words, best_matches)
                 if candidate is not None:
                     raw_start = candidate
                     status = "fallback_partial_word"
@@ -699,8 +760,7 @@ def _align_lyric_lines_global(
             continue
         matched = match_map.get(i) or []
         if matched:
-            idx = matched[0]
-            start = recognized_words[idx].start
+            start, idx = _estimate_line_raw_start(recognized_words, matched)
             if start is not None:
                 raw_starts[i] = float(start)
                 confidences[i] = min(1.0, len(matched) / max(1.0, len(line_tokens[i])))
