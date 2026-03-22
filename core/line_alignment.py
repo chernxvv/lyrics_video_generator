@@ -268,6 +268,9 @@ def _estimate_word_step_seconds(
 def _estimate_line_raw_start(
     recognized_words: list[RecognizedWord],
     match_pairs: list[_TokenMatch],
+    line_tokens: list[str] | None = None,
+    *,
+    russian_mode: bool = False,
 ) -> tuple[float | None, int]:
     if not match_pairs:
         return None, -1
@@ -276,6 +279,19 @@ def _estimate_line_raw_start(
     anchor_time = recognized_words[earliest.recognized_idx].start
     if anchor_time is None:
         return None, earliest.recognized_idx
+
+    missing_prefix_tokens = []
+    if line_tokens is not None and earliest.token_idx_in_line > 0:
+        missing_prefix_tokens = line_tokens[: earliest.token_idx_in_line]
+
+    low_info_prefix = all(len(token) <= 2 or _is_stopword(token, russian_mode=russian_mode) for token in missing_prefix_tokens)
+    allow_prefix_backdating = (
+        not missing_prefix_tokens
+        or low_info_prefix
+        or (len(missing_prefix_tokens) == 1 and len(match_pairs) >= 4)
+    )
+    if not allow_prefix_backdating:
+        return float(anchor_time), earliest.recognized_idx
 
     word_step = _estimate_word_step_seconds(recognized_words, match_pairs)
     if word_step is None:
@@ -638,7 +654,12 @@ def _align_lyric_lines_greedy(
                 trusted_matches = [match] if pos > 0 else best_matches
                 anchor_idx = match.recognized_idx
                 anchor_word = rec_word.raw
-                estimated_start, _ = _estimate_line_raw_start(recognized_words, trusted_matches)
+                estimated_start, _ = _estimate_line_raw_start(
+                    recognized_words,
+                    trusted_matches,
+                    tokens,
+                    russian_mode=cfg.russian_mode,
+                )
                 raw_start = estimated_start if estimated_start is not None else rec_word.start
                 if pos > 0:
                     non_first_anchor_count += 1
@@ -649,7 +670,12 @@ def _align_lyric_lines_greedy(
             status = "fallback"
             confidence = min(confidence, 0.35)
             if best_matches and not (is_low_info_line and confidence < cfg.min_local_match_score):
-                candidate, _ = _estimate_line_raw_start(recognized_words, best_matches)
+                candidate, _ = _estimate_line_raw_start(
+                    recognized_words,
+                    best_matches,
+                    tokens,
+                    russian_mode=cfg.russian_mode,
+                )
                 if candidate is not None:
                     raw_start = candidate
                     status = "fallback_partial_word"
@@ -761,7 +787,12 @@ def _align_lyric_lines_global(
             continue
         matched = match_map.get(i) or []
         if matched:
-            start, idx = _estimate_line_raw_start(recognized_words, matched)
+            start, idx = _estimate_line_raw_start(
+                recognized_words,
+                matched,
+                line_tokens[i],
+                russian_mode=cfg.russian_mode,
+            )
             if start is not None:
                 raw_starts[i] = float(start)
                 confidences[i] = min(1.0, len(matched) / max(1.0, len(line_tokens[i])))

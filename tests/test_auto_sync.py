@@ -235,6 +235,29 @@ def test_align_lyric_lines_does_not_extrapolate_single_sparse_match() -> None:
     assert global_result[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
 
 
+def test_align_lyric_lines_does_not_backdate_unsung_lead_in_tokens() -> None:
+    lyric_lines = ["maybe tonight we run"]
+    recognized = [
+        RecognizedWord(raw="tonight", normalized="tonight", start=10.0, end=10.2, confidence=0.99, index=0),
+        RecognizedWord(raw="we", normalized="we", start=10.3, end=10.5, confidence=0.99, index=1),
+        RecognizedWord(raw="run", normalized="run", start=10.6, end=10.8, confidence=0.99, index=2),
+    ]
+
+    greedy = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=False),
+    )
+    global_result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert greedy[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
+    assert global_result[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
+
+
 def test_align_lyric_lines_greedy_ignores_rejected_early_match_for_raw_start() -> None:
     lyric_lines = ["a miracle happens"]
     recognized = [
