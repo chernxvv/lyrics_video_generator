@@ -158,6 +158,146 @@ class _LocalBlockCandidate:
     confidence: float
 
 
+@dataclass(slots=True)
+class _SearchWindow:
+    level: str
+    start_idx: int
+    end_idx: int
+    span_seconds: float
+    material_state: str
+
+
+def _words_per_second(recognized_words: list[RecognizedWord], default: float = 2.5) -> float:
+    valid = [w.start for w in recognized_words if w.start is not None]
+    if len(valid) < 2:
+        return default
+    span = max(1.0, float(valid[-1]) - float(valid[0]))
+    return max(0.5, min(6.0, len(valid) / span))
+
+
+def _find_last_reliable_anchor(results: list[LineTimingResult], cfg: LineAlignmentConfig) -> tuple[int, float | None]:
+    for result in reversed(results):
+        if result.anchor_word_index < 0:
+            continue
+        if result.confidence < cfg.min_cursor_advance_confidence:
+            continue
+        if result.status.startswith("fallback"):
+            continue
+        return result.anchor_word_index, result.raw_start_seconds
+    return -1, None
+
+
+def _build_candidate_windows(
+    *,
+    recognized_words: list[RecognizedWord],
+    anchor_word_index: int,
+    prev_raw_start_seconds: float | None,
+    expected_line_duration_range: tuple[float, float],
+    cfg: LineAlignmentConfig,
+    line_token_count: int,
+    cursor_index: int,
+) -> list[_SearchWindow]:
+    if not recognized_words:
+        return []
+
+    words_per_second = _words_per_second(recognized_words)
+    local_lookahead = max(20, cfg.max_candidate_lookahead_words)
+    anchor_idx = max(0, min(len(recognized_words) - 1, anchor_word_index if anchor_word_index >= 0 else cursor_index))
+    base_start = max(cursor_index, anchor_idx)
+
+    expected_min_duration, expected_max_duration = expected_line_duration_range
+    expected_max_duration = max(expected_min_duration, expected_max_duration)
+    expected_end_time = None if prev_raw_start_seconds is None else prev_raw_start_seconds + expected_max_duration
+    expected_word_limit = max(
+        line_token_count + cfg.max_window_extra_words,
+        int(expected_max_duration * words_per_second) + cfg.max_window_extra_words,
+    )
+    if expected_end_time is not None:
+        time_end_idx = len(recognized_words) - 1
+        for idx in range(base_start, len(recognized_words)):
+            start_time = recognized_words[idx].start
+            if start_time is None:
+                continue
+            if float(start_time) > expected_end_time:
+                time_end_idx = max(base_start, idx)
+                break
+    else:
+        time_end_idx = min(len(recognized_words) - 1, base_start + local_lookahead)
+
+    narrow_end = min(len(recognized_words) - 1, max(base_start, time_end_idx, base_start + expected_word_limit))
+    material_state = "time_and_word_bounded" if expected_end_time is not None else "word_bounded"
+
+    windows: list[_SearchWindow] = [
+        _SearchWindow(
+            level="local",
+            start_idx=base_start,
+            end_idx=narrow_end,
+            span_seconds=max(0.0, expected_max_duration),
+            material_state=material_state,
+        )
+    ]
+
+    expansions = [
+        ("medium", max(local_lookahead, line_token_count * 8), max(expected_max_duration * 2.0, 8.0)),
+        ("wide", max(local_lookahead * 2, line_token_count * 14), max(expected_max_duration * 3.5, 16.0)),
+        ("global", max(local_lookahead * 4, len(recognized_words) - base_start), max(expected_max_duration * 6.0, 32.0)),
+    ]
+    last_end = narrow_end
+    for level, extra_words, span_seconds in expansions:
+        end_idx = min(len(recognized_words) - 1, max(last_end, base_start + extra_words))
+        windows.append(
+            _SearchWindow(
+                level=level,
+                start_idx=base_start,
+                end_idx=end_idx,
+                span_seconds=span_seconds,
+                material_state="expanded",
+            )
+        )
+        last_end = end_idx
+    return windows
+
+
+def _evaluate_window_candidates(
+    tokens: list[str],
+    recognized_words: list[RecognizedWord],
+    window: _SearchWindow,
+    *,
+    expected_time: float,
+    timeline_span: float,
+    cfg: LineAlignmentConfig,
+    cursor_index: int,
+) -> tuple[list[tuple[float, int, list[_TokenMatch]]], str]:
+    max_window = max(len(tokens) + cfg.max_window_extra_words, len(tokens) * 3)
+    span_words = max(1, window.end_idx - window.start_idx + 1)
+    candidates: list[tuple[float, int, list[_TokenMatch]]] = []
+    matched_starts = 0
+    for ridx in range(window.start_idx, min(len(recognized_words), window.end_idx + 1)):
+        score, matches, _ = _score_candidate(
+            tokens,
+            recognized_words,
+            ridx,
+            max_window,
+            expected_time=expected_time,
+            time_span=timeline_span,
+            time_prior_weight=cfg.time_prior_weight,
+            cursor_index=cursor_index,
+            cursor_span_words=span_words,
+            cursor_prior_weight=cfg.cursor_prior_weight,
+        )
+        if matches:
+            matched_starts += 1
+            candidates.append((score, ridx, matches))
+
+    if not candidates:
+        state = "no_material" if matched_starts == 0 else "no_candidates"
+    else:
+        best_score = max(score for score, _, _ in candidates)
+        state = "weak_score" if best_score < cfg.min_local_match_score else "matched"
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[:4], state
+
+
 def _build_local_block_candidates(
     line_idx: int,
     line_tokens_all: list[list[str]],
@@ -998,29 +1138,68 @@ def _align_lyric_lines_greedy(
 
         is_low_info_line = low_info_mask[line_idx]
         expected_time = _estimate_expected_time(line_idx, len(lyric_lines), first_word_time, last_word_time)
-        max_window = max(len(tokens) + cfg.max_window_extra_words, len(tokens) * 3)
-        local_lookahead = max(20, cfg.max_candidate_lookahead_words)
-        local_end = min(len(recognized_words), word_cursor + local_lookahead)
+        cursor_index = word_cursor
+        anchor_word_index, prev_raw_start_seconds = _find_last_reliable_anchor(results, cfg)
+        if prev_raw_start_seconds is None and results:
+            prev_raw_start_seconds = results[-1].raw_start_seconds
+        expected_duration = max(
+            min_gap_s,
+            (timeline_span / max(1, len(lyric_lines))) * max(0.65, len(tokens) / 4.0),
+        )
+        expected_line_duration_range = (
+            min_gap_s,
+            max(min_gap_s, min(max_jump_s, expected_duration * 1.8)),
+        )
+        search_windows = _build_candidate_windows(
+            recognized_words=recognized_words,
+            anchor_word_index=anchor_word_index,
+            prev_raw_start_seconds=prev_raw_start_seconds,
+            expected_line_duration_range=expected_line_duration_range,
+            cfg=cfg,
+            line_token_count=len(tokens),
+            cursor_index=cursor_index,
+        )
 
-        candidates: list[tuple[float, int, list[_TokenMatch]]] = []
-        for ridx in range(word_cursor, local_end):
-            score, matches, _ = _score_candidate(
+        top_candidates: list[tuple[float, int, list[_TokenMatch]]] = []
+        window_level = "unsearched"
+        window_state = "no_windows"
+        search_span_words = 0
+        search_span_seconds = 0.0
+        weak_window_seen = False
+
+        for window in search_windows:
+            if window.level in {"wide", "global"} and weak_window_seen:
+                window_state = "blocked_by_weak_intermediate"
+                break
+            window_candidates, candidate_state = _evaluate_window_candidates(
                 tokens,
                 recognized_words,
-                ridx,
-                max_window,
+                window,
                 expected_time=expected_time,
-                time_span=timeline_span,
-                time_prior_weight=cfg.time_prior_weight,
-                cursor_index=word_cursor,
-                cursor_span_words=local_lookahead,
-                cursor_prior_weight=cfg.cursor_prior_weight,
+                timeline_span=timeline_span,
+                cfg=cfg,
+                cursor_index=cursor_index,
             )
-            if matches:
-                candidates.append((score, ridx, matches))
-
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        top_candidates = candidates[:4] if candidates else []
+            if candidate_state == "weak_score":
+                weak_window_seen = True
+            if candidate_state == "matched":
+                top_candidates = window_candidates
+                window_level = window.level
+                window_state = candidate_state
+                search_span_words = max(1, window.end_idx - window.start_idx + 1)
+                search_span_seconds = window.span_seconds
+                break
+            if candidate_state == "weak_score":
+                window_state = candidate_state
+                search_span_words = max(1, window.end_idx - window.start_idx + 1)
+                search_span_seconds = window.span_seconds
+                continue
+            if candidate_state == "no_material":
+                window_state = candidate_state
+                search_span_words = max(1, window.end_idx - window.start_idx + 1)
+                search_span_seconds = window.span_seconds
+                continue
+            window_state = candidate_state
 
         if not top_candidates:
             best_score = -1.0
@@ -1037,7 +1216,7 @@ def _align_lyric_lines_greedy(
                 cfg,
                 expected_time,
                 timeline_span,
-                local_lookahead,
+                search_span_words,
             )
             for score, ridx, matches in top_candidates[1:]:
                 alt_context = _context_score_candidate(
@@ -1048,7 +1227,7 @@ def _align_lyric_lines_greedy(
                     cfg,
                     expected_time,
                     timeline_span,
-                    local_lookahead,
+                    search_span_words,
                 )
                 if alt_context > best_context + 0.08:
                     selected = (score, ridx, matches)
@@ -1153,8 +1332,21 @@ def _align_lyric_lines_greedy(
                     "candidate_start_idx": best_start_idx,
                     "expected_time": expected_time,
                     "low_info_line": int(is_low_info_line),
+                    "window_level": window_level,
+                    "window_state": window_state,
+                    "search_span_words": search_span_words,
+                    "search_span_seconds": round(search_span_seconds, 3),
                 },
             )
+        )
+        logger.debug(
+            "Line %s matched with window_level=%s span_words=%s span_seconds=%.3f state=%s score=%.3f",
+            line_idx,
+            window_level,
+            search_span_words,
+            search_span_seconds,
+            window_state,
+            best_score,
         )
 
     stats = {
