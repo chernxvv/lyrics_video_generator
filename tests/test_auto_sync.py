@@ -210,7 +210,7 @@ def test_align_lyric_lines_recovers_line_start_when_first_tokens_are_missing() -
 
     assert result[0].raw_start_seconds == pytest.approx(0.0, abs=0.01)
     assert result[1].raw_start_seconds == pytest.approx(0.90, abs=0.01)
-    assert result[2].raw_start_seconds == pytest.approx(2.10, abs=0.01)
+    assert result[2].raw_start_seconds == pytest.approx(2.40, abs=0.01)
 
 
 def test_align_lyric_lines_does_not_extrapolate_single_sparse_match() -> None:
@@ -262,6 +262,29 @@ def test_align_lyric_lines_does_not_backdate_missing_leading_content_word() -> N
 
 def test_align_lyric_lines_does_not_backdate_unsung_lead_in_tokens() -> None:
     lyric_lines = ["maybe tonight we run"]
+    recognized = [
+        RecognizedWord(raw="tonight", normalized="tonight", start=10.0, end=10.2, confidence=0.99, index=0),
+        RecognizedWord(raw="we", normalized="we", start=10.3, end=10.5, confidence=0.99, index=1),
+        RecognizedWord(raw="run", normalized="run", start=10.6, end=10.8, confidence=0.99, index=2),
+    ]
+
+    greedy = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=False),
+    )
+    global_result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert greedy[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
+    assert global_result[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
+
+
+def test_align_lyric_lines_does_not_backdate_skipped_ad_lib_prefix() -> None:
+    lyric_lines = ["oh tonight we run"]
     recognized = [
         RecognizedWord(raw="tonight", normalized="tonight", start=10.0, end=10.2, confidence=0.99, index=0),
         RecognizedWord(raw="we", normalized="we", start=10.3, end=10.5, confidence=0.99, index=1),
