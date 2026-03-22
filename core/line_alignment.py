@@ -547,6 +547,141 @@ def _resolve_timing_conflicts(
     return relocated, results
 
 
+def _find_nearest_word_index(recognized_words: list[RecognizedWord], target_time: float | None) -> int | None:
+    if target_time is None:
+        return None
+    best_idx: int | None = None
+    best_dist: float | None = None
+    for idx, word in enumerate(recognized_words):
+        if word.start is None:
+            continue
+        dist = abs(float(word.start) - float(target_time))
+        if best_dist is None or dist < best_dist:
+            best_idx = idx
+            best_dist = dist
+    return best_idx
+
+
+def _refine_global_results_locally(
+    results: list[LineTimingResult],
+    lyric_lines: list[str],
+    line_tokens: list[list[str]],
+    low_info_mask: list[bool],
+    recognized_words: list[RecognizedWord],
+    *,
+    cfg: LineAlignmentConfig,
+) -> int:
+    if not results or not recognized_words:
+        return 0
+
+    min_gap_s = max(0.0, float(cfg.min_line_gap_ms)) / 1000.0
+    suspicious_gap_s = max(min_gap_s * 4.0, float(cfg.max_context_jump_ms) / 1000.0)
+    time_span = max(
+        5.0,
+        (float(recognized_words[-1].start) - float(recognized_words[0].start))
+        if recognized_words[0].start is not None and recognized_words[-1].start is not None
+        else 5.0,
+    )
+
+    refined = 0
+    cursor_index = 0
+    for line_idx, res in enumerate(results):
+        tokens = line_tokens[line_idx]
+        if not tokens:
+            continue
+
+        prev_raw = results[line_idx - 1].raw_start_seconds if line_idx > 0 else None
+        next_raw = next((results[j].raw_start_seconds for j in range(line_idx + 1, len(results)) if results[j].raw_start_seconds is not None), None)
+
+        current_raw = res.raw_start_seconds
+        far_from_prev = prev_raw is not None and current_raw is not None and (current_raw - prev_raw) > suspicious_gap_s
+        needs_refine = low_info_mask[line_idx] or far_from_prev or res.status.startswith("fallback")
+        if not needs_refine:
+            nearest_current_idx = _find_nearest_word_index(recognized_words, current_raw)
+            if nearest_current_idx is not None:
+                cursor_index = max(cursor_index, nearest_current_idx + 1)
+            continue
+
+        expected_time = current_raw
+        if prev_raw is not None and next_raw is not None:
+            expected_time = prev_raw + ((next_raw - prev_raw) / max(1, (line_idx + 1) - (line_idx - 1)))
+        elif prev_raw is not None:
+            expected_time = max(prev_raw + min_gap_s, current_raw or (prev_raw + min_gap_s))
+        if far_from_prev and prev_raw is not None:
+            expected_time = min(
+                expected_time if expected_time is not None else float("inf"),
+                prev_raw + min(3.0, max(min_gap_s, suspicious_gap_s * 0.5)),
+            )
+
+        approx_current_idx = _find_nearest_word_index(recognized_words, current_raw)
+        search_start = max(0, cursor_index - 2)
+        search_end = min(len(recognized_words), cursor_index + max(20, cfg.max_candidate_lookahead_words))
+        if approx_current_idx is not None:
+            search_end = max(search_end, min(len(recognized_words), approx_current_idx + 2))
+
+        best_score = -1.0
+        best_matches: list[_TokenMatch] = []
+        for ridx in range(search_start, search_end):
+            score, matches, _ = _score_candidate(
+                tokens,
+                recognized_words,
+                ridx,
+                max(len(tokens) + cfg.max_window_extra_words, len(tokens) * 3),
+                expected_time=expected_time,
+                time_span=time_span,
+                time_prior_weight=min(0.75, cfg.time_prior_weight + 0.15),
+                cursor_index=cursor_index,
+                cursor_span_words=max(20, cfg.max_candidate_lookahead_words),
+                cursor_prior_weight=min(0.55, cfg.cursor_prior_weight + 0.15),
+            )
+            if matches and score > best_score:
+                best_score = score
+                best_matches = matches
+
+        if not best_matches:
+            continue
+
+        candidate_raw, candidate_anchor = _estimate_line_raw_start(
+            recognized_words,
+            best_matches,
+            tokens,
+            russian_mode=cfg.russian_mode,
+        )
+        if candidate_raw is None:
+            continue
+        if prev_raw is not None and candidate_raw < prev_raw + min_gap_s:
+            continue
+        if next_raw is not None and candidate_raw >= next_raw:
+            continue
+
+        min_score = min(cfg.min_local_match_score, 0.45) if low_info_mask[line_idx] else cfg.min_local_match_score
+        improves_gap = far_from_prev and prev_raw is not None and candidate_raw <= (prev_raw + suspicious_gap_s)
+        improves_order = current_raw is None or candidate_raw + min_gap_s < current_raw
+        if best_score < min_score or not (improves_gap or improves_order or res.status.startswith("fallback")):
+            continue
+
+        res.raw_start_seconds = float(candidate_raw)
+        res.anchor_word_index = candidate_anchor
+        res.anchor_word = recognized_words[candidate_anchor].raw if 0 <= candidate_anchor < len(recognized_words) else res.anchor_word
+        res.confidence = max(res.confidence, min(1.0, best_score))
+        res.status = f"{res.status}_local_refined"
+        refined += 1
+        cursor_index = max(cursor_index, candidate_anchor + 1)
+
+    if refined == 0:
+        return 0
+
+    pre_roll_s = max(0.0, min(float(cfg.pre_roll_ms), 300.0)) / 1000.0
+    rebuilt: list[LineTimingResult] = []
+    for res in results:
+        adjusted = max(0.0, float(res.raw_start_seconds or 0.0) - pre_roll_s)
+        if rebuilt:
+            adjusted = max(adjusted, rebuilt[-1].start_time_seconds + min_gap_s)
+        res.start_time_seconds = adjusted
+        rebuilt.append(res)
+    return refined
+
+
 def _align_lyric_lines_greedy(
     lyric_lines: list[str],
     recognized_words: list[RecognizedWord],
@@ -885,6 +1020,14 @@ def _align_lyric_lines_global(
         "anchored_strong_lines": anchored_strong_lines,
         "interpolated_low_info_lines": interpolated_low_info_lines,
     }
+    stats["local_refined_lines"] = _refine_global_results_locally(
+        results,
+        lyric_lines,
+        line_tokens,
+        low_info_mask,
+        recognized_words,
+        cfg=cfg,
+    )
     return results, strong_mask, stats
 
 
@@ -974,5 +1117,7 @@ def align_lyric_lines(
 
     if stats.get("context_override_count", 0) > 0:
         logger.info("Line alignment: context overrides=%d", stats["context_override_count"])
+    if stats.get("local_refined_lines", 0) > 0:
+        logger.info("Line alignment: local refinements=%d", stats["local_refined_lines"])
 
     return results

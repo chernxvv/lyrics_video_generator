@@ -260,6 +260,51 @@ def test_align_lyric_lines_does_not_backdate_missing_leading_content_word() -> N
     assert global_result[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
 
 
+def test_align_lyric_lines_global_refines_late_repeated_matches() -> None:
+    lyric_lines = [
+        "Это стало ужасно",
+        "Не резко, а медленно",
+        "Как будто мир стирает краски небрежно",
+        "Эти локоны",
+        "Что тянули взгляд",
+    ]
+    recognized: list[RecognizedWord] = []
+
+    def add_line(text: str, start: float, step: float = 0.35) -> None:
+        current = start
+        for token in text.lower().replace(",", "").split():
+            recognized.append(
+                RecognizedWord(
+                    raw=token,
+                    normalized=token,
+                    start=current,
+                    end=current + 0.2,
+                    confidence=0.99,
+                    index=len(recognized),
+                )
+            )
+            current += step
+
+    for idx, line in enumerate(lyric_lines):
+        add_line(line, idx * 2.0)
+    for idx, line in enumerate(lyric_lines[1:]):
+        add_line(line, 30.0 + idx * 1.2)
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(russian_mode=True, use_global_alignment=True),
+    )
+
+    assert result[0].raw_start_seconds == pytest.approx(0.0, abs=0.01)
+    assert result[1].raw_start_seconds == pytest.approx(2.0, abs=0.01)
+    assert result[2].raw_start_seconds == pytest.approx(4.0, abs=0.01)
+    assert result[3].raw_start_seconds == pytest.approx(6.0, abs=0.01)
+    assert result[4].raw_start_seconds == pytest.approx(8.0, abs=0.01)
+    assert result[3].status.endswith("local_refined")
+    assert result[4].status.endswith("local_refined")
+
+
 def test_align_lyric_lines_does_not_backdate_unsung_lead_in_tokens() -> None:
     lyric_lines = ["maybe tonight we run"]
     recognized = [
