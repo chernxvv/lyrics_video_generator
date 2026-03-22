@@ -240,7 +240,10 @@ def _build_flat_text_tokens(lyric_lines: list[str], line_tokens: list[list[str]]
     return flat
 
 
-def _estimate_word_step_seconds(recognized_words: list[RecognizedWord], match_pairs: list[_TokenMatch] | None = None) -> float:
+def _estimate_word_step_seconds(
+    recognized_words: list[RecognizedWord],
+    match_pairs: list[_TokenMatch] | None = None,
+) -> float | None:
     candidate_steps: list[float] = []
 
     if match_pairs and len(match_pairs) >= 2:
@@ -256,13 +259,7 @@ def _estimate_word_step_seconds(recognized_words: list[RecognizedWord], match_pa
             candidate_steps.append((float(right_time) - float(left_time)) / token_gap)
 
     if not candidate_steps:
-        for prev, curr in zip(recognized_words, recognized_words[1:]):
-            if prev.start is None or curr.start is None or curr.start <= prev.start:
-                continue
-            candidate_steps.append(float(curr.start) - float(prev.start))
-
-    if not candidate_steps:
-        return 0.24
+        return None
 
     median_step = sorted(candidate_steps)[len(candidate_steps) // 2]
     return min(0.8, max(0.08, median_step))
@@ -281,6 +278,9 @@ def _estimate_line_raw_start(
         return None, earliest.recognized_idx
 
     word_step = _estimate_word_step_seconds(recognized_words, match_pairs)
+    if word_step is None:
+        return float(anchor_time), earliest.recognized_idx
+
     estimated_start = max(0.0, float(anchor_time) - (earliest.token_idx_in_line * word_step))
     return estimated_start, earliest.recognized_idx
 
@@ -635,9 +635,10 @@ def _align_lyric_lines_greedy(
                 suspicious = short or stop or weak_conf
                 if suspicious and pos + 1 < len(best_matches):
                     continue
+                trusted_matches = [match] if pos > 0 else best_matches
                 anchor_idx = match.recognized_idx
                 anchor_word = rec_word.raw
-                estimated_start, _ = _estimate_line_raw_start(recognized_words, best_matches)
+                estimated_start, _ = _estimate_line_raw_start(recognized_words, trusted_matches)
                 raw_start = estimated_start if estimated_start is not None else rec_word.start
                 if pos > 0:
                     non_first_anchor_count += 1

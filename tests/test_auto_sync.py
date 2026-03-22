@@ -211,3 +211,43 @@ def test_align_lyric_lines_recovers_line_start_when_first_tokens_are_missing() -
     assert result[0].raw_start_seconds == pytest.approx(0.0, abs=0.01)
     assert result[1].raw_start_seconds == pytest.approx(0.90, abs=0.01)
     assert result[2].raw_start_seconds == pytest.approx(2.10, abs=0.01)
+
+
+def test_align_lyric_lines_does_not_extrapolate_single_sparse_match() -> None:
+    lyric_lines = ["this is a long line now"]
+    recognized = [
+        RecognizedWord(raw="intro", normalized="intro", start=0.0, end=0.1, confidence=0.99, index=0),
+        RecognizedWord(raw="now", normalized="now", start=10.0, end=10.2, confidence=0.99, index=1),
+    ]
+
+    greedy = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=False),
+    )
+    global_result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert greedy[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
+    assert global_result[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
+
+
+def test_align_lyric_lines_greedy_ignores_rejected_early_match_for_raw_start() -> None:
+    lyric_lines = ["a miracle happens"]
+    recognized = [
+        RecognizedWord(raw="a", normalized="a", start=9.5, end=9.6, confidence=0.99, index=0),
+        RecognizedWord(raw="miracle", normalized="miracle", start=10.2, end=10.4, confidence=0.99, index=1),
+        RecognizedWord(raw="happens", normalized="happens", start=10.6, end=10.8, confidence=0.99, index=2),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=False),
+    )
+
+    assert result[0].anchor_word == "miracle"
+    assert result[0].raw_start_seconds == pytest.approx(10.2, abs=0.01)
