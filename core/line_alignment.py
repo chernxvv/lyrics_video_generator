@@ -64,6 +64,8 @@ _STOPWORDS_EN = {
     "it",
     "they",
 }
+_LEAD_IN_TOKENS_RU = {"как", "будто", "словно"}
+_LEAD_IN_TOKENS_EN = {"oh", "well", "hey"}
 
 
 @dataclass(slots=True)
@@ -168,6 +170,10 @@ def tokenize_for_matching(text: str, *, russian_mode: bool = False) -> list[str]
 
 def _is_stopword(token: str, *, russian_mode: bool) -> bool:
     return token in (_STOPWORDS_RU if russian_mode else _STOPWORDS_EN)
+
+
+def _is_lead_in_token(token: str, *, russian_mode: bool) -> bool:
+    return token in (_LEAD_IN_TOKENS_RU if russian_mode else _LEAD_IN_TOKENS_EN)
 
 
 def build_recognized_words(words: list[dict], *, russian_mode: bool = False) -> list[RecognizedWord]:
@@ -284,11 +290,15 @@ def _estimate_line_raw_start(
     if line_tokens is not None and earliest.token_idx_in_line > 0:
         missing_prefix_tokens = line_tokens[: earliest.token_idx_in_line]
 
-    low_info_prefix = all(len(token) <= 2 or _is_stopword(token, russian_mode=russian_mode) for token in missing_prefix_tokens)
+    low_info_prefix = all(
+        len(token) <= 2
+        or _is_stopword(token, russian_mode=russian_mode)
+        or _is_lead_in_token(token, russian_mode=russian_mode)
+        for token in missing_prefix_tokens
+    )
     allow_prefix_backdating = (
         not missing_prefix_tokens
         or low_info_prefix
-        or (len(missing_prefix_tokens) == 1 and len(match_pairs) >= 4)
     )
     if not allow_prefix_backdating:
         return float(anchor_time), earliest.recognized_idx
