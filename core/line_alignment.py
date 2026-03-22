@@ -295,7 +295,7 @@ def _estimate_line_raw_start(
     )
     allow_prefix_backdating = (
         not missing_prefix_tokens
-        or low_info_prefix
+        or (low_info_prefix and len(match_pairs) >= 3)
     )
     if not allow_prefix_backdating:
         return float(anchor_time), earliest.recognized_idx

@@ -209,7 +209,7 @@ def test_align_lyric_lines_recovers_line_start_when_first_tokens_are_missing() -
     )
 
     assert result[0].raw_start_seconds == pytest.approx(0.0, abs=0.01)
-    assert result[1].raw_start_seconds == pytest.approx(0.90, abs=0.01)
+    assert result[1].raw_start_seconds == pytest.approx(1.20, abs=0.01)
     assert result[2].raw_start_seconds == pytest.approx(2.40, abs=0.01)
 
 
@@ -345,3 +345,25 @@ def test_align_lyric_lines_uses_true_median_gap_for_backdating() -> None:
 
     assert greedy[0].raw_start_seconds == pytest.approx(10.2, abs=0.01)
     assert global_result[0].raw_start_seconds == pytest.approx(9.6, abs=0.01)
+
+
+def test_align_lyric_lines_does_not_backdate_stopword_prefix_that_may_be_unsung() -> None:
+    lyric_lines = ["I remember you"]
+    recognized = [
+        RecognizedWord(raw="remember", normalized="remember", start=10.0, end=10.2, confidence=0.99, index=0),
+        RecognizedWord(raw="you", normalized="you", start=10.3, end=10.5, confidence=0.99, index=1),
+    ]
+
+    greedy = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=False),
+    )
+    global_result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert greedy[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
+    assert global_result[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
