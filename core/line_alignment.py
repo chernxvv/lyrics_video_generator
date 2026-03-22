@@ -444,6 +444,59 @@ def _score_candidate(
     return score, matches, first_rel
 
 
+def _is_global_match_reliable(
+    line_tokens: list[str],
+    matches: list[_TokenMatch],
+    recognized_words: list[RecognizedWord],
+    *,
+    cfg: LineAlignmentConfig,
+) -> bool:
+    if not line_tokens or not matches:
+        return False
+
+    unique_token_indices = sorted({match.token_idx_in_line for match in matches})
+    matched_count = len(unique_token_indices)
+    coverage = matched_count / max(1, len(line_tokens))
+
+    content_tokens = [token for token in line_tokens if not _is_stopword(token, russian_mode=cfg.russian_mode)]
+    matched_content_count = sum(
+        1
+        for token_idx in unique_token_indices
+        if 0 <= token_idx < len(line_tokens) and not _is_stopword(line_tokens[token_idx], russian_mode=cfg.russian_mode)
+    )
+
+    if content_tokens and matched_content_count == 0:
+        return False
+    if len(line_tokens) >= 3 and matched_count < 2 and coverage < 0.6 and matched_content_count == 0:
+        return False
+
+    first_match_idx = min(match.recognized_idx for match in matches)
+    local_score, local_matches, _ = _score_candidate(
+        line_tokens,
+        recognized_words,
+        max(0, first_match_idx - 1),
+        max(len(line_tokens) + cfg.max_window_extra_words, len(line_tokens) * 3),
+        expected_time=recognized_words[first_match_idx].start,
+        time_span=max(5.0, float(cfg.max_context_jump_ms) / 1000.0),
+        time_prior_weight=min(0.2, cfg.time_prior_weight),
+        cursor_index=max(0, first_match_idx - 1),
+        cursor_span_words=max(12, len(line_tokens) * 3),
+        cursor_prior_weight=0.0,
+    )
+    if not local_matches:
+        return False
+
+    if matched_content_count > 0 and local_score >= cfg.min_local_match_score:
+        return True
+
+    if matched_content_count == 1 and local_score >= max(0.35, cfg.min_local_match_score * 0.7):
+        only_idx = unique_token_indices[0]
+        only_token = line_tokens[only_idx] if 0 <= only_idx < len(line_tokens) else ""
+        return len(only_token) >= cfg.min_anchor_word_length and not _is_stopword(only_token, russian_mode=cfg.russian_mode)
+
+    return coverage >= 0.75 and matched_content_count >= max(1, min(2, len(content_tokens)))
+
+
 def _context_score_candidate(
     line_idx: int,
     start_idx: int,
@@ -928,7 +981,12 @@ def _align_lyric_lines_global(
         if not strong_mask[i]:
             continue
         matched = match_map.get(i) or []
-        if matched:
+        if matched and _is_global_match_reliable(
+            line_tokens[i],
+            matched,
+            recognized_words,
+            cfg=cfg,
+        ):
             start, idx = _estimate_line_raw_start(
                 recognized_words,
                 matched,

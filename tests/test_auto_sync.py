@@ -9,7 +9,7 @@ if str(ROOT) not in sys.path:
 
 from core.auto_sync import AutoSyncError, _split_lyrics_text, auto_sync_lyrics
 from models import LyricLine
-from core.line_alignment import LineAlignmentConfig, RecognizedWord, align_lyric_lines
+from core.line_alignment import LineAlignmentConfig, RecognizedWord, _TokenMatch, _is_global_match_reliable, align_lyric_lines
 
 
 def test_split_lyrics_text_strips_and_ignores_empty_lines() -> None:
@@ -303,6 +303,65 @@ def test_align_lyric_lines_global_refines_late_repeated_matches() -> None:
     assert result[4].raw_start_seconds == pytest.approx(8.0, abs=0.01)
     assert result[3].status.endswith("local_refined")
     assert result[4].status.endswith("local_refined")
+
+
+def test_global_match_reliability_rejects_stopword_only_anchor() -> None:
+    line_tokens = ["не", "резко", "а", "медленно"]
+    recognized = [
+        RecognizedWord(raw="может", normalized="может", start=29.0, end=29.2, confidence=0.99, index=0),
+        RecognizedWord(raw="дело", normalized="дело", start=29.3, end=29.5, confidence=0.99, index=1),
+        RecognizedWord(raw="не", normalized="не", start=29.6, end=29.8, confidence=0.99, index=2),
+        RecognizedWord(raw="в", normalized="в", start=29.9, end=30.1, confidence=0.99, index=3),
+        RecognizedWord(raw="словах", normalized="словах", start=30.2, end=30.4, confidence=0.99, index=4),
+    ]
+    matches = [_TokenMatch(token_idx_in_line=0, recognized_idx=2)]
+
+    assert not _is_global_match_reliable(
+        line_tokens,
+        matches,
+        recognized,
+        cfg=LineAlignmentConfig(russian_mode=True),
+    )
+
+
+def test_align_lyric_lines_global_does_not_anchor_to_late_stopword_overlap() -> None:
+    lyric_lines = [
+        "Это стало ужасно",
+        "Не резко, а медленно",
+        "Как будто мир стирает краски небрежно",
+        "Может, дело не в людях, не в словах",
+    ]
+    recognized: list[RecognizedWord] = []
+
+    def add_line(text: str, start: float, step: float = 0.33) -> None:
+        current = start
+        for token in text.lower().replace(",", "").split():
+            recognized.append(
+                RecognizedWord(
+                    raw=token,
+                    normalized=token,
+                    start=current,
+                    end=current + 0.18,
+                    confidence=0.99,
+                    index=len(recognized),
+                )
+            )
+            current += step
+
+    add_line(lyric_lines[0], 0.0)
+    add_line(lyric_lines[1], 1.2)
+    add_line(lyric_lines[2], 3.2)
+    add_line(lyric_lines[3], 29.0)
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(russian_mode=True, use_global_alignment=True),
+    )
+
+    assert result[1].raw_start_seconds == pytest.approx(1.2, abs=0.01)
+    assert result[1].raw_start_seconds < 5.0
+    assert result[3].raw_start_seconds == pytest.approx(29.0, abs=0.01)
 
 
 def test_align_lyric_lines_does_not_backdate_unsung_lead_in_tokens() -> None:

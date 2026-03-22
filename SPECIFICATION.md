@@ -229,6 +229,7 @@ Pipeline details:
 - Line start timestamps are computed by separate post-processing (`core/line_alignment.py`) based on words (not raw `segment.start`).
 - When alignment misses the first token(s) of a line, line post-processing estimates the true line start from later matched words using local speech-rate heuristics instead of anchoring strictly to the first detected matched word.
 - Global alignment is additionally validated by sequential local re-checks: if a low-information line or a suspiciously late repeated phrase jumps too far from nearby lines, the algorithm reanchors it near the current cursor instead of blindly keeping a later chorus/reprise match.
+- Weak global matches are rejected before anchoring if they rely only on stopwords/particles (for example a lone `не`) or otherwise do not show enough overall line similarity; such cases fall back to stronger local validation instead of producing a false timestamp.
 - UX heuristics include `pre-roll`, `min_line_gap`, false-start protection, and fallback strategies for weakly recognized lines.
 - If WhisperX is unavailable or alignment fails, pipeline falls back to tuned librosa backend (onset/energy improvements).
 
