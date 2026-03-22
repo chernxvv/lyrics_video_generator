@@ -445,3 +445,50 @@ def test_align_lyric_lines_global_rejects_late_local_match_when_previous_line_is
     }
     assert result[1].details["gap_from_prev_line_s"] > 10.0
     assert result[1].details["recognized_jump_words"] >= 1
+
+
+def test_align_lyric_lines_global_refines_suspicious_anchor_block_instead_of_locking_tail() -> None:
+    lyric_lines = [f"line{idx} aa bb" for idx in range(20)]
+    recognized: list[RecognizedWord] = []
+
+    word_index = 0
+    for idx, line in enumerate(lyric_lines):
+        current_time = float(idx)
+        for token in line.split():
+            recognized.append(
+                RecognizedWord(
+                    raw=token,
+                    normalized=token,
+                    start=current_time,
+                    end=current_time + 0.2,
+                    confidence=0.99,
+                    index=word_index,
+                )
+            )
+            word_index += 1
+            current_time += 0.2
+
+    for offset, token in enumerate(lyric_lines[-1].split()):
+        recognized.append(
+            RecognizedWord(
+                raw=token,
+                normalized=token,
+                start=25.0 + (offset * 0.2),
+                end=25.2 + (offset * 0.2),
+                confidence=0.99,
+                index=word_index,
+            )
+        )
+        word_index += 1
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[18].status == "matched_global_refined_block"
+    assert result[18].raw_start_seconds == pytest.approx(18.0, abs=0.01)
+    assert result[18].details["refined_from_block"] == "17:18"
+    assert result[18].details["suspicious_gap_s"] > 2.0
+    assert result[19].raw_start_seconds > 24.0

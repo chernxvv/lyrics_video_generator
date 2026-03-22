@@ -145,6 +145,291 @@ class _TokenMatch:
     recognized_idx: int
 
 
+
+
+@dataclass(slots=True)
+class _LocalBlockCandidate:
+    start_idx: int
+    matches: list[_TokenMatch]
+    score: float
+    raw_start_seconds: float | None
+    anchor_idx: int
+    anchor_word: str
+    confidence: float
+
+
+def _build_local_block_candidates(
+    line_idx: int,
+    line_tokens_all: list[list[str]],
+    recognized_words: list[RecognizedWord],
+    *,
+    cfg: LineAlignmentConfig,
+    first_word_time: float,
+    last_word_time: float,
+    cursor_start: int,
+    cursor_end: int,
+) -> list[_LocalBlockCandidate]:
+    tokens = line_tokens_all[line_idx]
+    if not tokens or cursor_start > cursor_end or not recognized_words:
+        return []
+
+    expected_time = _estimate_expected_time(line_idx, len(line_tokens_all), first_word_time, last_word_time)
+    time_span = max(5.0, last_word_time - first_word_time)
+    max_window = max(len(tokens) + cfg.max_window_extra_words, len(tokens) * 3)
+    cursor_span_words = max(1, cursor_end - cursor_start + 1)
+
+    built: list[_LocalBlockCandidate] = []
+    for ridx in range(max(0, cursor_start), min(len(recognized_words) - 1, cursor_end) + 1):
+        score, matches, _ = _score_candidate(
+            tokens,
+            recognized_words,
+            ridx,
+            max_window,
+            expected_time=expected_time,
+            time_span=time_span,
+            time_prior_weight=cfg.time_prior_weight,
+            cursor_index=cursor_start,
+            cursor_span_words=cursor_span_words,
+            cursor_prior_weight=cfg.cursor_prior_weight,
+        )
+        if not matches:
+            continue
+        raw_start, anchor_idx = _estimate_line_raw_start(
+            recognized_words,
+            matches,
+            tokens,
+            russian_mode=cfg.russian_mode,
+        )
+        if raw_start is None or anchor_idx < 0:
+            continue
+        anchor_word = recognized_words[anchor_idx].raw
+        confidence = min(1.0, len(matches) / max(1.0, len(tokens)))
+        built.append(
+            _LocalBlockCandidate(
+                start_idx=ridx,
+                matches=matches,
+                score=score,
+                raw_start_seconds=float(raw_start),
+                anchor_idx=anchor_idx,
+                anchor_word=anchor_word,
+                confidence=confidence,
+            )
+        )
+
+    built.sort(key=lambda item: (item.score, item.confidence, -item.anchor_idx), reverse=True)
+    return built[:6]
+
+
+def _score_block_path(
+    path: list[_LocalBlockCandidate],
+    line_indices: list[int],
+    recognized_words: list[RecognizedWord],
+    *,
+    first_word_time: float,
+    last_word_time: float,
+) -> float:
+    if not path:
+        return float('-inf')
+    total = 0.0
+    time_span = max(5.0, last_word_time - first_word_time)
+    for pos, candidate in enumerate(path):
+        line_idx = line_indices[pos]
+        total += candidate.score + candidate.confidence
+        if candidate.raw_start_seconds is not None:
+            expected_time = _estimate_expected_time(line_idx, max(line_indices) + 1, first_word_time, last_word_time)
+            total -= abs(candidate.raw_start_seconds - expected_time) / time_span
+        if pos == 0:
+            continue
+        prev = path[pos - 1]
+        if candidate.anchor_idx <= prev.anchor_idx:
+            return float('-inf')
+        jump_words = candidate.anchor_idx - prev.anchor_idx
+        jump_time = 0.0
+        prev_time = recognized_words[prev.anchor_idx].start
+        next_time = recognized_words[candidate.anchor_idx].start
+        if prev_time is not None and next_time is not None:
+            jump_time = max(0.0, float(next_time) - float(prev_time))
+        line_delta = max(1, line_idx - line_indices[pos - 1])
+        total -= max(0.0, jump_words - (line_delta * 8)) * 0.08
+        total -= max(0.0, jump_time - (line_delta * 4.0)) * 0.12
+    return total
+
+
+def _refine_global_results_locally(
+    lyric_lines: list[str],
+    line_tokens: list[list[str]],
+    strong_mask: list[bool],
+    recognized_words: list[RecognizedWord],
+    match_map: dict[int, list[_TokenMatch]],
+    raw_starts: list[float | None],
+    confidences: list[float],
+    statuses: list[str],
+    anchor_words: list[str],
+    anchor_indices: list[int],
+    line_details: list[dict[str, str | float | int]],
+    *,
+    cfg: LineAlignmentConfig,
+    first_word_time: float,
+    last_word_time: float,
+) -> int:
+    reliable_indices = [idx for idx, status in enumerate(statuses) if status == "matched_global" and strong_mask[idx] and raw_starts[idx] is not None]
+    if not reliable_indices:
+        return 0
+
+    refined_blocks = 0
+    last_reliable_idx = reliable_indices[0]
+    for current_idx in range(last_reliable_idx + 1, len(line_tokens)):
+        if not strong_mask[current_idx]:
+            continue
+        prev_anchor_idx = anchor_indices[last_reliable_idx]
+        matched_current = match_map.get(current_idx) or []
+        estimated_current_start = raw_starts[current_idx]
+        current_anchor_idx = anchor_indices[current_idx]
+        if matched_current and (estimated_current_start is None or current_anchor_idx < 0):
+            estimated_current_start, current_anchor_idx = _estimate_line_raw_start(
+                recognized_words,
+                matched_current,
+                line_tokens[current_idx],
+                russian_mode=cfg.russian_mode,
+            )
+        if prev_anchor_idx < 0 or current_anchor_idx < 0 or estimated_current_start is None:
+            if statuses[current_idx] == "matched_global":
+                last_reliable_idx = current_idx
+            continue
+
+        unresolved_before = sum(1 for li in range(last_reliable_idx + 1, current_idx) if statuses[li].startswith('fallback') or statuses[li] == 'unresolved')
+        matched_tokens = sum(len(match_map.get(li) or []) for li in range(last_reliable_idx + 1, current_idx + 1) if strong_mask[li])
+        total_tokens = sum(len(line_tokens[li]) for li in range(last_reliable_idx + 1, current_idx + 1) if strong_mask[li])
+        match_density = matched_tokens / max(1, total_tokens)
+        line_delta = max(1, current_idx - last_reliable_idx)
+        gap_s = max(0.0, float(estimated_current_start or 0.0) - float(raw_starts[last_reliable_idx] or 0.0))
+        word_jump = max(0, current_anchor_idx - prev_anchor_idx)
+        density_ratio_time = line_details[current_idx].get("density_ratio_time", 0.0)
+        density_ratio_words = line_details[current_idx].get("density_ratio_words", 0.0)
+        local_confidence = line_details[current_idx].get("local_confidence", confidences[current_idx])
+        suspicious = (
+            gap_s > max(cfg.max_line_jump_ms / 1000.0, line_delta * 3.5)
+            or word_jump > line_delta * 10
+            or unresolved_before >= 2
+            or (unresolved_before >= 1 and match_density < 0.45)
+            or match_density < 0.34
+            or (isinstance(density_ratio_time, (int, float)) and float(density_ratio_time) > cfg.global_soft_line_time_factor * 1.35)
+            or (isinstance(density_ratio_words, (int, float)) and isinstance(local_confidence, (int, float)) and float(density_ratio_words) > cfg.global_soft_line_word_factor * 0.65 and float(local_confidence) < 0.85)
+        )
+        if not suspicious:
+            if statuses[current_idx] == "matched_global":
+                last_reliable_idx = current_idx
+            continue
+
+        block_line_indices = [li for li in range(last_reliable_idx + 1, current_idx + 1) if strong_mask[li]]
+        if not block_line_indices:
+            if statuses[current_idx] == "matched_global":
+                last_reliable_idx = current_idx
+            continue
+
+        block_start_cursor = prev_anchor_idx + 1
+        block_end_cursor = current_anchor_idx
+        if block_start_cursor >= block_end_cursor:
+            if statuses[current_idx] == "matched_global":
+                last_reliable_idx = current_idx
+            continue
+
+        candidates_per_line: list[list[_LocalBlockCandidate]] = []
+        cursor_floor = block_start_cursor
+        for li in block_line_indices:
+            candidates = _build_local_block_candidates(
+                li,
+                line_tokens,
+                recognized_words,
+                cfg=cfg,
+                first_word_time=first_word_time,
+                last_word_time=last_word_time,
+                cursor_start=cursor_floor,
+                cursor_end=block_end_cursor,
+            )
+            if not candidates:
+                candidates_per_line = []
+                break
+            candidates_per_line.append(candidates)
+        if not candidates_per_line:
+            if statuses[current_idx] == "matched_global":
+                last_reliable_idx = current_idx
+            continue
+
+        paths: list[tuple[float, list[_LocalBlockCandidate]]] = [(0.0, [])]
+        for candidates in candidates_per_line:
+            new_paths: list[tuple[float, list[_LocalBlockCandidate]]] = []
+            for base_score, base_path in paths:
+                prev_anchor = base_path[-1].anchor_idx if base_path else prev_anchor_idx
+                for candidate in candidates:
+                    if candidate.anchor_idx <= prev_anchor or candidate.anchor_idx > block_end_cursor:
+                        continue
+                    next_path = base_path + [candidate]
+                    path_score = _score_block_path(
+                        next_path,
+                        block_line_indices[: len(next_path)],
+                        recognized_words,
+                        first_word_time=first_word_time,
+                        last_word_time=last_word_time,
+                    )
+                    if path_score == float('-inf'):
+                        continue
+                    new_paths.append((path_score, next_path))
+            new_paths.sort(key=lambda item: item[0], reverse=True)
+            paths = new_paths[:12]
+            if not paths:
+                break
+        if not paths:
+            if statuses[current_idx] == "matched_global":
+                last_reliable_idx = current_idx
+            continue
+
+        best_score, best_path = paths[0]
+        baseline_candidates = []
+        for li in block_line_indices:
+            matched = match_map.get(li) or []
+            if not matched or raw_starts[li] is None or anchor_indices[li] < 0:
+                continue
+            baseline_candidates.append(
+                _LocalBlockCandidate(
+                    start_idx=anchor_indices[li],
+                    matches=matched,
+                    score=float(line_details[li].get('local_confidence', confidences[li])) if isinstance(line_details[li].get('local_confidence', confidences[li]), (int, float)) else confidences[li],
+                    raw_start_seconds=float(raw_starts[li]),
+                    anchor_idx=anchor_indices[li],
+                    anchor_word=anchor_words[li],
+                    confidence=confidences[li],
+                )
+            )
+        baseline_score = _score_block_path(
+            baseline_candidates,
+            block_line_indices[: len(baseline_candidates)],
+            recognized_words,
+            first_word_time=first_word_time,
+            last_word_time=last_word_time,
+        ) if len(baseline_candidates) == len(block_line_indices) else float('-inf')
+
+        if best_score <= baseline_score + 0.05:
+            if statuses[current_idx] == "matched_global":
+                last_reliable_idx = current_idx
+            continue
+
+        for li, candidate in zip(block_line_indices, best_path):
+            raw_starts[li] = candidate.raw_start_seconds
+            confidences[li] = max(confidences[li], candidate.confidence)
+            statuses[li] = 'matched_global_refined_block'
+            anchor_words[li] = candidate.anchor_word
+            anchor_indices[li] = candidate.anchor_idx
+            line_details[li]['refined_from_block'] = f'{last_reliable_idx}:{current_idx}'
+            line_details[li]['refined_block_score'] = round(best_score, 4)
+            line_details[li]['suspicious_gap_s'] = round(gap_s, 4)
+            line_details[li]['suspicious_unresolved_before'] = unresolved_before
+            line_details[li]['suspicious_match_density'] = round(match_density, 4)
+        refined_blocks += 1
+        last_reliable_idx = current_idx
+
+    return refined_blocks
+
 def normalize_for_matching(text: str, *, russian_mode: bool = False) -> str:
     normalized = unicodedata.normalize("NFKC", text).lower()
     normalized = normalized.replace("ё", "е") if russian_mode else normalized
@@ -969,6 +1254,23 @@ def _align_lyric_lines_global(
 
         statuses[i] = "fallback_global"
 
+    refined_block_count = _refine_global_results_locally(
+        lyric_lines,
+        line_tokens,
+        strong_mask,
+        recognized_words,
+        match_map,
+        raw_starts,
+        confidences,
+        statuses,
+        anchor_words,
+        anchor_indices,
+        line_details,
+        cfg=cfg,
+        first_word_time=first_word_time,
+        last_word_time=last_word_time,
+    )
+
     # Fill strong unresolved with segment/gap fallback
     for i in range(len(lyric_lines)):
         if not strong_mask[i] or raw_starts[i] is not None:
@@ -1039,6 +1341,7 @@ def _align_lyric_lines_global(
         "anchored_strong_lines": anchored_strong_lines,
         "interpolated_low_info_lines": interpolated_low_info_lines,
         "global_rejection_count": global_rejection_count,
+        "refined_block_count": refined_block_count,
     }
     return results, strong_mask, stats
 
