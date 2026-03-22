@@ -9,7 +9,7 @@ if str(ROOT) not in sys.path:
 
 from core.auto_sync import AutoSyncError, _split_lyrics_text, auto_sync_lyrics
 from models import LyricLine
-from core.line_alignment import LineAlignmentConfig, RecognizedWord, align_lyric_lines
+from core.line_alignment import LineAlignmentConfig, RecognizedWord, SegmentInfo, align_lyric_lines
 
 
 def test_split_lyrics_text_strips_and_ignores_empty_lines() -> None:
@@ -492,3 +492,38 @@ def test_align_lyric_lines_global_refines_suspicious_anchor_block_instead_of_loc
     assert result[18].details["refined_from_block"] == "17:18"
     assert result[18].details["suspicious_gap_s"] > 2.0
     assert result[19].raw_start_seconds > 24.0
+
+
+def test_align_lyric_lines_segment_prior_rejects_far_future_match() -> None:
+    lyric_lines = [
+        "alpha intro start",
+        "beta second line",
+        "gamma closing line",
+    ]
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=0.0, end=0.2, confidence=0.99, index=0),
+        RecognizedWord(raw="intro", normalized="intro", start=0.2, end=0.4, confidence=0.99, index=1),
+        RecognizedWord(raw="start", normalized="start", start=0.4, end=0.6, confidence=0.99, index=2),
+        RecognizedWord(raw="beta", normalized="beta", start=29.0, end=29.2, confidence=0.99, index=3),
+        RecognizedWord(raw="second", normalized="second", start=29.2, end=29.4, confidence=0.99, index=4),
+        RecognizedWord(raw="line", normalized="line", start=29.4, end=29.6, confidence=0.99, index=5),
+        RecognizedWord(raw="gamma", normalized="gamma", start=30.0, end=30.2, confidence=0.99, index=6),
+        RecognizedWord(raw="closing", normalized="closing", start=30.2, end=30.4, confidence=0.99, index=7),
+        RecognizedWord(raw="line", normalized="line", start=30.4, end=30.6, confidence=0.99, index=8),
+    ]
+    segments = [SegmentInfo(start=float(idx), end=float(idx) + 1.0, text=f"seg{idx}") for idx in range(32)]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        segments=segments,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[0].status == "matched_global"
+    assert result[0].details["matched_segment_idx"] == 0
+    assert result[1].status != "matched_global"
+    assert result[1].details["matched_segment_idx"] == 29
+    assert result[1].details["segment_jump_count"] >= 27
+    assert result[1].details["segment_prior_score"] < -10.0
+    assert result[1].details["rejected_reason"] == "segment_jump_too_large"

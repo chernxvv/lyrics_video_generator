@@ -100,6 +100,9 @@ class LineAlignmentConfig:
     global_hard_line_time_factor: float = 3.6
     global_hard_line_word_factor: float = 4.5
     global_constraint_penalty: float = 7.5
+    segment_expected_match_bonus: float = 0.32
+    segment_jump_penalty: float = 0.58
+    segment_far_penalty: float = 1.35
     russian_mode: bool = False
 
 
@@ -165,6 +168,84 @@ class _SearchWindow:
     end_idx: int
     span_seconds: float
     material_state: str
+
+
+@dataclass(slots=True)
+class _SegmentPrior:
+    expected_start_idx: int
+    expected_end_idx: int
+    matched_segment_idx: int
+    segment_jump_count: int
+    prior_score: float
+
+
+def _time_to_segment_idx(segments: list[SegmentInfo], value: float | None) -> int:
+    if value is None or not segments:
+        return -1
+    candidate_idx = -1
+    for idx, seg in enumerate(segments):
+        seg_start = float(seg.start) if seg.start is not None else None
+        seg_end = float(seg.end) if seg.end is not None else None
+        if seg_start is not None and value < seg_start:
+            return max(0, idx - 1) if idx > 0 else 0
+        if seg_start is not None and seg_end is not None and seg_start <= value < seg_end:
+            return idx
+        if seg_start is not None and value >= seg_start:
+            candidate_idx = idx
+    return candidate_idx
+
+
+def _estimate_segment_prior(
+    *,
+    segments: list[SegmentInfo],
+    matched_time: float | None,
+    line_idx: int,
+    total_lines: int,
+    prev_confirmed_line_idx: int,
+    prev_confirmed_segment_idx: int,
+) -> _SegmentPrior:
+    matched_segment_idx = _time_to_segment_idx(segments, matched_time)
+    if matched_segment_idx < 0 or not segments:
+        return _SegmentPrior(-1, -1, matched_segment_idx, 0, 0.0)
+
+    last_segment_idx = len(segments) - 1
+    if prev_confirmed_segment_idx < 0:
+        expected_progress = (line_idx / max(1, total_lines - 1)) * last_segment_idx
+        expected_start_idx = max(0, int(expected_progress) - 1)
+        expected_end_idx = min(last_segment_idx, int(expected_progress) + 1)
+    else:
+        line_delta = max(1, line_idx - prev_confirmed_line_idx)
+        remaining_lines = max(1, total_lines - 1 - prev_confirmed_line_idx)
+        remaining_segments = max(0, last_segment_idx - prev_confirmed_segment_idx)
+        expected_step = remaining_segments / float(remaining_lines)
+        expected_center = prev_confirmed_segment_idx + (line_delta * expected_step)
+        slack = max(1, int(round(max(1.0, expected_step * line_delta * 0.75))))
+        expected_start_idx = max(prev_confirmed_segment_idx, int(expected_center) - slack)
+        expected_end_idx = min(last_segment_idx, int(expected_center) + slack)
+
+    if matched_segment_idx < expected_start_idx:
+        distance = expected_start_idx - matched_segment_idx
+    elif matched_segment_idx > expected_end_idx:
+        distance = matched_segment_idx - expected_end_idx
+    else:
+        distance = 0
+
+    segment_jump_count = 0
+    if prev_confirmed_segment_idx >= 0:
+        line_delta = max(1, line_idx - prev_confirmed_line_idx)
+        allowed_jump = max(1, line_delta)
+        actual_jump = max(0, matched_segment_idx - prev_confirmed_segment_idx)
+        segment_jump_count = max(0, actual_jump - allowed_jump)
+
+    prior_score = 0.0
+    if distance == 0:
+        prior_score += 1.0
+    else:
+        prior_score -= float(distance)
+    if segment_jump_count > 0:
+        prior_score -= segment_jump_count * 0.75
+
+    return _SegmentPrior(expected_start_idx, expected_end_idx, matched_segment_idx, segment_jump_count, prior_score)
 
 
 def _words_per_second(recognized_words: list[RecognizedWord], default: float = 2.5) -> float:
@@ -267,13 +348,18 @@ def _evaluate_window_candidates(
     timeline_span: float,
     cfg: LineAlignmentConfig,
     cursor_index: int,
-) -> tuple[list[tuple[float, int, list[_TokenMatch]]], str]:
+    segments: list[SegmentInfo],
+    line_idx: int,
+    total_lines: int,
+    prev_confirmed_line_idx: int,
+    prev_confirmed_segment_idx: int,
+) -> tuple[list[tuple[float, int, list[_TokenMatch], _SegmentPrior | None]], str]:
     max_window = max(len(tokens) + cfg.max_window_extra_words, len(tokens) * 3)
     span_words = max(1, window.end_idx - window.start_idx + 1)
-    candidates: list[tuple[float, int, list[_TokenMatch]]] = []
+    candidates: list[tuple[float, int, list[_TokenMatch], _SegmentPrior | None]] = []
     matched_starts = 0
     for ridx in range(window.start_idx, min(len(recognized_words), window.end_idx + 1)):
-        score, matches, _ = _score_candidate(
+        score, matches, _, _segment_prior = _score_candidate(
             tokens,
             recognized_words,
             ridx,
@@ -284,15 +370,22 @@ def _evaluate_window_candidates(
             cursor_index=cursor_index,
             cursor_span_words=span_words,
             cursor_prior_weight=cfg.cursor_prior_weight,
+            segment_expected_match_bonus=cfg.segment_expected_match_bonus,
+            segment_jump_penalty=cfg.segment_jump_penalty,
+            segments=segments,
+            line_idx=line_idx,
+            total_lines=total_lines,
+            prev_confirmed_line_idx=prev_confirmed_line_idx,
+            prev_confirmed_segment_idx=prev_confirmed_segment_idx,
         )
         if matches:
             matched_starts += 1
-            candidates.append((score, ridx, matches))
+            candidates.append((score, ridx, matches, _segment_prior))
 
     if not candidates:
         state = "no_material" if matched_starts == 0 else "no_candidates"
     else:
-        best_score = max(score for score, _, _ in candidates)
+        best_score = max(score for score, *_rest in candidates)
         state = "weak_score" if best_score < cfg.min_local_match_score else "matched"
     candidates.sort(key=lambda item: item[0], reverse=True)
     return candidates[:4], state
@@ -308,6 +401,9 @@ def _build_local_block_candidates(
     last_word_time: float,
     cursor_start: int,
     cursor_end: int,
+    segments: list[SegmentInfo],
+    prev_confirmed_line_idx: int,
+    prev_confirmed_segment_idx: int,
 ) -> list[_LocalBlockCandidate]:
     tokens = line_tokens_all[line_idx]
     if not tokens or cursor_start > cursor_end or not recognized_words:
@@ -320,7 +416,7 @@ def _build_local_block_candidates(
 
     built: list[_LocalBlockCandidate] = []
     for ridx in range(max(0, cursor_start), min(len(recognized_words) - 1, cursor_end) + 1):
-        score, matches, _ = _score_candidate(
+        score, matches, _, _segment_prior = _score_candidate(
             tokens,
             recognized_words,
             ridx,
@@ -331,6 +427,13 @@ def _build_local_block_candidates(
             cursor_index=cursor_start,
             cursor_span_words=cursor_span_words,
             cursor_prior_weight=cfg.cursor_prior_weight,
+            segment_expected_match_bonus=cfg.segment_expected_match_bonus,
+            segment_jump_penalty=cfg.segment_jump_penalty,
+            segments=segments,
+            line_idx=line_idx,
+            total_lines=len(line_tokens_all),
+            prev_confirmed_line_idx=prev_confirmed_line_idx,
+            prev_confirmed_segment_idx=prev_confirmed_segment_idx,
         )
         if not matches:
             continue
@@ -409,6 +512,7 @@ def _refine_global_results_locally(
     line_details: list[dict[str, str | float | int]],
     *,
     cfg: LineAlignmentConfig,
+    segments: list[SegmentInfo],
     first_word_time: float,
     last_word_time: float,
 ) -> int:
@@ -486,6 +590,9 @@ def _refine_global_results_locally(
                 last_word_time=last_word_time,
                 cursor_start=cursor_floor,
                 cursor_end=block_end_cursor,
+                segments=segments,
+                prev_confirmed_line_idx=last_reliable_idx,
+                prev_confirmed_segment_idx=_time_to_segment_idx(segments, raw_starts[last_reliable_idx]),
             )
             if not candidates:
                 candidates_per_line = []
@@ -565,6 +672,17 @@ def _refine_global_results_locally(
             line_details[li]['suspicious_gap_s'] = round(gap_s, 4)
             line_details[li]['suspicious_unresolved_before'] = unresolved_before
             line_details[li]['suspicious_match_density'] = round(match_density, 4)
+            refined_prior = _estimate_segment_prior(
+                segments=segments,
+                matched_time=candidate.raw_start_seconds,
+                line_idx=li,
+                total_lines=len(lyric_lines),
+                prev_confirmed_line_idx=last_reliable_idx,
+                prev_confirmed_segment_idx=_time_to_segment_idx(segments, raw_starts[last_reliable_idx]),
+            )
+            line_details[li]['matched_segment_idx'] = refined_prior.matched_segment_idx
+            line_details[li]['segment_jump_count'] = refined_prior.segment_jump_count
+            line_details[li]['segment_prior_score'] = round(refined_prior.prior_score, 4)
         refined_blocks += 1
         last_reliable_idx = current_idx
 
@@ -758,6 +876,7 @@ def _is_global_match_reliable(
     first_word_time: float,
     last_word_time: float,
     cfg: LineAlignmentConfig,
+    segments: list[SegmentInfo],
 ) -> tuple[bool, dict[str, str | float | int]]:
     details: dict[str, str | float | int] = {
         "line_idx": line_idx,
@@ -770,6 +889,9 @@ def _is_global_match_reliable(
         "expected_jump_words": 0.0,
         "density_ratio_time": 0.0,
         "density_ratio_words": 0.0,
+        "matched_segment_idx": -1,
+        "segment_jump_count": 0,
+        "segment_prior_score": 0.0,
     }
     if not matched or raw_start_seconds is None:
         details["rejected_reason"] = "missing_anchor"
@@ -777,6 +899,21 @@ def _is_global_match_reliable(
 
     anchor_idx = min(match.recognized_idx for match in matched)
     details["anchor_word_index"] = anchor_idx
+
+    segment_prior = _estimate_segment_prior(
+        segments=segments,
+        matched_time=raw_start_seconds,
+        line_idx=line_idx,
+        total_lines=line_count,
+        prev_confirmed_line_idx=prev_reliable_line_idx,
+        prev_confirmed_segment_idx=_time_to_segment_idx(segments, prev_reliable_raw_start_seconds),
+    )
+    details["matched_segment_idx"] = segment_prior.matched_segment_idx
+    details["segment_jump_count"] = segment_prior.segment_jump_count
+    details["segment_prior_score"] = round(segment_prior.prior_score, 4)
+    if segment_prior.segment_jump_count > max(0, line_idx - prev_reliable_line_idx) and segment_prior.prior_score < -1.5:
+        details["rejected_reason"] = "segment_jump_too_large"
+        return False, details
 
     if prev_reliable_line_idx >= 0 and confidence < cfg.min_local_match_score and len(matched) < 2:
         details["rejected_reason"] = "low_local_similarity"
@@ -841,6 +978,7 @@ def _global_align_tokens(
     first_word_time: float,
     last_word_time: float,
     total_lines: int,
+    segments: list[SegmentInfo],
 ) -> dict[int, list[_TokenMatch]]:
     if not flat_tokens or not recognized_words:
         return {}
@@ -859,6 +997,19 @@ def _global_align_tokens(
             if rec.start is not None:
                 dist = abs(float(rec.start) - expected_time)
                 score += cfg.global_time_bonus * max(0.0, 1.0 - (dist / time_span))
+            segment_prior = _estimate_segment_prior(
+                segments=segments,
+                matched_time=rec.start,
+                line_idx=text_tok.line_idx,
+                total_lines=total_lines,
+                prev_confirmed_line_idx=-1,
+                prev_confirmed_segment_idx=-1,
+            )
+            if segment_prior.matched_segment_idx >= 0:
+                if segment_prior.prior_score >= 0:
+                    score += cfg.segment_expected_match_bonus * (1.0 + min(1.0, segment_prior.prior_score))
+                else:
+                    score -= cfg.segment_jump_penalty * abs(segment_prior.prior_score)
             candidates.append((flat_idx, rec_idx, text_tok, rec, score))
 
     if not candidates:
@@ -905,6 +1056,22 @@ def _global_align_tokens(
                 line_scale = float(line_delta)
                 transition_score -= cfg.global_expected_index_penalty * (rec_idx_dist / line_scale)
                 transition_score -= cfg.global_expected_time_penalty * (time_dist / line_scale)
+
+                current_segment_prior = _estimate_segment_prior(
+                    segments=segments,
+                    matched_time=current_time,
+                    line_idx=text_tok.line_idx,
+                    total_lines=total_lines,
+                    prev_confirmed_line_idx=prev_text_tok.line_idx,
+                    prev_confirmed_segment_idx=_time_to_segment_idx(segments, prev_time),
+                )
+                if current_segment_prior.matched_segment_idx >= 0:
+                    if current_segment_prior.prior_score >= 0:
+                        transition_score += cfg.segment_expected_match_bonus * (1.0 + min(1.0, current_segment_prior.prior_score))
+                    else:
+                        transition_score -= cfg.segment_jump_penalty * abs(current_segment_prior.prior_score)
+                    if current_segment_prior.segment_jump_count > 0:
+                        transition_score -= cfg.segment_far_penalty * current_segment_prior.segment_jump_count
 
                 soft_word_limit = words_per_line * cfg.global_soft_line_word_factor * line_scale
                 soft_time_limit = seconds_per_line * cfg.global_soft_line_time_factor * line_scale
@@ -958,9 +1125,16 @@ def _score_candidate(
     cursor_index: int,
     cursor_span_words: int,
     cursor_prior_weight: float,
-) -> tuple[float, list[_TokenMatch], int]:
+    segment_expected_match_bonus: float = 0.0,
+    segment_jump_penalty: float = 0.0,
+    segments: list[SegmentInfo] | None = None,
+    line_idx: int | None = None,
+    total_lines: int | None = None,
+    prev_confirmed_line_idx: int = -1,
+    prev_confirmed_segment_idx: int = -1,
+) -> tuple[float, list[_TokenMatch], int, _SegmentPrior | None]:
     if not line_tokens:
-        return 0.0, [], 0
+        return 0.0, [], 0, None
     end_idx = min(len(recognized), start_idx + window_size)
     rec_tokens = [w.normalized for w in recognized[start_idx:end_idx]]
 
@@ -977,7 +1151,7 @@ def _score_candidate(
 
     coverage = len(matches) / max(1, len(line_tokens))
     if not matches:
-        return 0.0, [], 0
+        return 0.0, [], 0, None
 
     first_rel = max(0, matches[0].recognized_idx - start_idx)
     compactness = 1.0 - (first_rel / max(1, window_size))
@@ -995,7 +1169,24 @@ def _score_candidate(
         cursor_score = max(0.0, 1.0 - (distance_words / float(cursor_span_words)))
         score = (1.0 - cursor_prior_weight) * score + cursor_prior_weight * cursor_score
 
-    return score, matches, first_rel
+    segment_prior = None
+    if segments and line_idx is not None and total_lines is not None:
+        matched_time = recognized[matches[0].recognized_idx].start if matches else None
+        segment_prior = _estimate_segment_prior(
+            segments=segments,
+            matched_time=matched_time,
+            line_idx=line_idx,
+            total_lines=total_lines,
+            prev_confirmed_line_idx=prev_confirmed_line_idx,
+            prev_confirmed_segment_idx=prev_confirmed_segment_idx,
+        )
+        if segment_prior.matched_segment_idx >= 0:
+            if segment_prior.prior_score >= 0:
+                score += segment_expected_match_bonus * (1.0 + min(1.0, segment_prior.prior_score))
+            else:
+                score -= segment_jump_penalty * abs(segment_prior.prior_score)
+
+    return score, matches, first_rel, segment_prior
 
 
 def _context_score_candidate(
@@ -1007,8 +1198,11 @@ def _context_score_candidate(
     expected_time: float,
     time_span: float,
     local_lookahead: int,
+    segments: list[SegmentInfo],
+    prev_confirmed_line_idx: int,
+    prev_confirmed_segment_idx: int,
 ) -> float:
-    base, base_matches, _ = _score_candidate(
+    base, base_matches, _, _ = _score_candidate(
         line_tokens_all[line_idx],
         recognized_words,
         start_idx,
@@ -1019,6 +1213,13 @@ def _context_score_candidate(
         cursor_index=start_idx,
         cursor_span_words=local_lookahead,
         cursor_prior_weight=cfg.cursor_prior_weight,
+        segment_expected_match_bonus=cfg.segment_expected_match_bonus,
+        segment_jump_penalty=cfg.segment_jump_penalty,
+        segments=segments,
+        line_idx=line_idx,
+        total_lines=len(line_tokens_all),
+        prev_confirmed_line_idx=prev_confirmed_line_idx,
+        prev_confirmed_segment_idx=prev_confirmed_segment_idx,
     )
     if not base_matches:
         return base
@@ -1033,7 +1234,7 @@ def _context_score_candidate(
         if not next_tokens:
             continue
         next_expected = _estimate_expected_time(li, len(line_tokens_all), expected_time - (line_idx * 0.01), expected_time + time_span)
-        next_s, next_matches, _ = _score_candidate(
+        next_s, next_matches, _, _ = _score_candidate(
             next_tokens,
             recognized_words,
             min(len(recognized_words) - 1, anchor_pos + 1),
@@ -1044,6 +1245,13 @@ def _context_score_candidate(
             cursor_index=anchor_pos,
             cursor_span_words=local_lookahead,
             cursor_prior_weight=min(0.5, cfg.cursor_prior_weight + 0.1),
+            segment_expected_match_bonus=cfg.segment_expected_match_bonus,
+            segment_jump_penalty=cfg.segment_jump_penalty,
+            segments=segments,
+            line_idx=li,
+            total_lines=len(line_tokens_all),
+            prev_confirmed_line_idx=line_idx,
+            prev_confirmed_segment_idx=_time_to_segment_idx(segments, recognized_words[anchor_pos].start),
         )
         if not next_matches:
             score -= cfg.lookahead_weight * 0.9
@@ -1140,6 +1348,8 @@ def _align_lyric_lines_greedy(
         expected_time = _estimate_expected_time(line_idx, len(lyric_lines), first_word_time, last_word_time)
         cursor_index = word_cursor
         anchor_word_index, prev_raw_start_seconds = _find_last_reliable_anchor(results, cfg)
+        prev_confirmed_line_idx = max((idx for idx, result in enumerate(results) if result.raw_start_seconds is not None and not result.status.startswith("fallback")), default=-1)
+        prev_confirmed_segment_idx = _time_to_segment_idx(segments, prev_raw_start_seconds)
         if prev_raw_start_seconds is None and results:
             prev_raw_start_seconds = results[-1].raw_start_seconds
         expected_duration = max(
@@ -1160,7 +1370,8 @@ def _align_lyric_lines_greedy(
             cursor_index=cursor_index,
         )
 
-        top_candidates: list[tuple[float, int, list[_TokenMatch]]] = []
+        top_candidates: list[tuple[float, int, list[_TokenMatch], _SegmentPrior | None]] = []
+        weak_top_candidates: list[tuple[float, int, list[_TokenMatch], _SegmentPrior | None]] = []
         window_level = "unsearched"
         window_state = "no_windows"
         search_span_words = 0
@@ -1168,7 +1379,7 @@ def _align_lyric_lines_greedy(
         weak_window_seen = False
 
         for window in search_windows:
-            if window.level in {"wide", "global"} and weak_window_seen:
+            if window.level in {"wide", "global"} and weak_window_seen and len(lyric_lines) > 1:
                 window_state = "blocked_by_weak_intermediate"
                 break
             window_candidates, candidate_state = _evaluate_window_candidates(
@@ -1179,9 +1390,16 @@ def _align_lyric_lines_greedy(
                 timeline_span=timeline_span,
                 cfg=cfg,
                 cursor_index=cursor_index,
+                segments=segments,
+                line_idx=line_idx,
+                total_lines=len(lyric_lines),
+                prev_confirmed_line_idx=prev_confirmed_line_idx,
+                prev_confirmed_segment_idx=prev_confirmed_segment_idx,
             )
             if candidate_state == "weak_score":
                 weak_window_seen = True
+                if window_candidates and not weak_top_candidates:
+                    weak_top_candidates = window_candidates
             if candidate_state == "matched":
                 top_candidates = window_candidates
                 window_level = window.level
@@ -1201,13 +1419,17 @@ def _align_lyric_lines_greedy(
                 continue
             window_state = candidate_state
 
+        if not top_candidates and weak_top_candidates:
+            top_candidates = weak_top_candidates
+
         if not top_candidates:
             best_score = -1.0
             best_start_idx = -1
             best_matches: list[_TokenMatch] = []
+            best_segment_prior = None
         else:
-            local_best_score, local_best_start_idx, local_best_matches = top_candidates[0]
-            selected = (local_best_score, local_best_start_idx, local_best_matches)
+            local_best_score, local_best_start_idx, local_best_matches, local_best_segment_prior = top_candidates[0]
+            selected = (local_best_score, local_best_start_idx, local_best_matches, local_best_segment_prior)
             best_context = _context_score_candidate(
                 line_idx,
                 local_best_start_idx,
@@ -1217,8 +1439,11 @@ def _align_lyric_lines_greedy(
                 expected_time,
                 timeline_span,
                 search_span_words,
+                segments,
+                prev_confirmed_line_idx,
+                prev_confirmed_segment_idx,
             )
-            for score, ridx, matches in top_candidates[1:]:
+            for score, ridx, matches, segment_prior in top_candidates[1:]:
                 alt_context = _context_score_candidate(
                     line_idx,
                     ridx,
@@ -1228,12 +1453,15 @@ def _align_lyric_lines_greedy(
                     expected_time,
                     timeline_span,
                     search_span_words,
+                    segments,
+                    prev_confirmed_line_idx,
+                    prev_confirmed_segment_idx,
                 )
                 if alt_context > best_context + 0.08:
-                    selected = (score, ridx, matches)
+                    selected = (score, ridx, matches, segment_prior)
                     best_context = alt_context
                     context_override_count += 1
-            best_score, best_start_idx, best_matches = selected
+            best_score, best_start_idx, best_matches, best_segment_prior = selected
 
         anchor_idx = -1
         anchor_word = ""
@@ -1336,6 +1564,9 @@ def _align_lyric_lines_greedy(
                     "window_state": window_state,
                     "search_span_words": search_span_words,
                     "search_span_seconds": round(search_span_seconds, 3),
+                    "matched_segment_idx": -1 if best_segment_prior is None else best_segment_prior.matched_segment_idx,
+                    "segment_jump_count": 0 if best_segment_prior is None else best_segment_prior.segment_jump_count,
+                    "segment_prior_score": 0.0 if best_segment_prior is None else round(best_segment_prior.prior_score, 4),
                 },
             )
         )
@@ -1384,6 +1615,7 @@ def _align_lyric_lines_global(
         first_word_time=first_word_time,
         last_word_time=last_word_time,
         total_lines=len(lyric_lines),
+        segments=segments,
     )
 
     raw_starts: list[float | None] = [None] * len(lyric_lines)
@@ -1391,7 +1623,17 @@ def _align_lyric_lines_global(
     statuses: list[str] = ["unresolved"] * len(lyric_lines)
     anchor_words: list[str] = ["" for _ in lyric_lines]
     anchor_indices: list[int] = [-1 for _ in lyric_lines]
-    line_details: list[dict[str, str | float | int]] = [{"line_idx": i, "tokens": len(line_tokens[i]), "low_info_line": int(low_info_mask[i])} for i in range(len(lyric_lines))]
+    line_details: list[dict[str, str | float | int]] = [
+        {
+            "line_idx": i,
+            "tokens": len(line_tokens[i]),
+            "low_info_line": int(low_info_mask[i]),
+            "matched_segment_idx": -1,
+            "segment_jump_count": 0,
+            "segment_prior_score": 0.0,
+        }
+        for i in range(len(lyric_lines))
+    ]
 
     anchored_strong_lines = 0
     interpolated_low_info_lines = 0
@@ -1428,6 +1670,7 @@ def _align_lyric_lines_global(
                 first_word_time=first_word_time,
                 last_word_time=last_word_time,
                 cfg=cfg,
+                segments=segments,
             )
             line_details[i].update(reliability_details)
             if reliable and start is not None and idx >= 0:
@@ -1459,6 +1702,7 @@ def _align_lyric_lines_global(
         anchor_indices,
         line_details,
         cfg=cfg,
+        segments=segments,
         first_word_time=first_word_time,
         last_word_time=last_word_time,
     )
@@ -1468,6 +1712,35 @@ def _align_lyric_lines_global(
         if not strong_mask[i] or raw_starts[i] is not None:
             continue
         prev = max((raw_starts[k] for k in range(i - 1, -1, -1) if raw_starts[k] is not None), default=None)
+        prev_line_idx = max((k for k in range(i - 1, -1, -1) if raw_starts[k] is not None and strong_mask[k]), default=-1)
+        prev_segment_idx = _time_to_segment_idx(segments, prev)
+        diagnostic_candidates = _build_local_block_candidates(
+            i,
+            line_tokens,
+            recognized_words,
+            cfg=cfg,
+            first_word_time=first_word_time,
+            last_word_time=last_word_time,
+            cursor_start=0 if prev_line_idx < 0 else max(0, anchor_indices[prev_line_idx] + 1),
+            cursor_end=len(recognized_words) - 1,
+            segments=segments,
+            prev_confirmed_line_idx=prev_line_idx,
+            prev_confirmed_segment_idx=prev_segment_idx,
+        )
+        if diagnostic_candidates:
+            diagnostic = diagnostic_candidates[0]
+            diagnostic_prior = _estimate_segment_prior(
+                segments=segments,
+                matched_time=diagnostic.raw_start_seconds,
+                line_idx=i,
+                total_lines=len(lyric_lines),
+                prev_confirmed_line_idx=prev_line_idx,
+                prev_confirmed_segment_idx=prev_segment_idx,
+            )
+            line_details[i]["matched_segment_idx"] = diagnostic_prior.matched_segment_idx
+            line_details[i]["segment_jump_count"] = diagnostic_prior.segment_jump_count
+            line_details[i]["segment_prior_score"] = round(diagnostic_prior.prior_score, 4)
+            line_details[i].setdefault("rejected_reason", "segment_jump_too_large")
         if cfg.allow_segment_fallback:
             seg_start = _find_segment_fallback_start(segments, prev_start=(prev or -min_gap_s), min_gap_s=min_gap_s)
             if seg_start is not None:
