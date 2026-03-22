@@ -261,7 +261,12 @@ def _estimate_word_step_seconds(
     if not candidate_steps:
         return None
 
-    median_step = sorted(candidate_steps)[len(candidate_steps) // 2]
+    ordered_steps = sorted(candidate_steps)
+    mid = len(ordered_steps) // 2
+    if len(ordered_steps) % 2 == 0:
+        median_step = (ordered_steps[mid - 1] + ordered_steps[mid]) / 2.0
+    else:
+        median_step = ordered_steps[mid]
     return min(0.8, max(0.08, median_step))
 
 
