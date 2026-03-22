@@ -9,7 +9,7 @@ if str(ROOT) not in sys.path:
 
 from core.auto_sync import AutoSyncError, _split_lyrics_text, auto_sync_lyrics
 from models import LyricLine
-from core.line_alignment import LineAlignmentConfig, RecognizedWord, align_lyric_lines
+from core.line_alignment import LineAlignmentConfig, RecognizedWord, SegmentInfo, align_lyric_lines
 
 
 def test_split_lyrics_text_strips_and_ignores_empty_lines() -> None:
@@ -386,3 +386,144 @@ def test_align_lyric_lines_does_not_backdate_stopword_prefix_that_may_be_unsung(
 
     assert greedy[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
     assert global_result[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
+
+
+def test_align_lyric_lines_global_penalizes_far_line_jump_even_with_overlap() -> None:
+    lyric_lines = [f"line {idx} unique" for idx in range(18)]
+    lyric_lines[0] = "alpha start begins"
+    lyric_lines[17] = "alpha finish ending"
+
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=0.0, end=0.2, confidence=0.99, index=0),
+        RecognizedWord(raw="start", normalized="start", start=0.2, end=0.4, confidence=0.99, index=1),
+        RecognizedWord(raw="begins", normalized="begins", start=0.4, end=0.6, confidence=0.99, index=2),
+        RecognizedWord(raw="alpha", normalized="alpha", start=25.0, end=25.2, confidence=0.99, index=3),
+        RecognizedWord(raw="finish", normalized="finish", start=25.2, end=25.4, confidence=0.99, index=4),
+        RecognizedWord(raw="ending", normalized="ending", start=25.4, end=25.6, confidence=0.99, index=5),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[0].status == "matched_global"
+    assert result[0].raw_start_seconds == pytest.approx(0.0, abs=0.01)
+    assert result[17].status != "matched_global"
+    assert result[17].raw_start_seconds > result[0].raw_start_seconds
+
+
+def test_align_lyric_lines_global_rejects_late_local_match_when_previous_line_is_recent() -> None:
+    lyric_lines = [
+        "alpha start now",
+        "gamma after long section",
+        "delta missing outro",
+    ]
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=0.0, end=0.2, confidence=0.99, index=0),
+        RecognizedWord(raw="start", normalized="start", start=0.2, end=0.4, confidence=0.99, index=1),
+        RecognizedWord(raw="now", normalized="now", start=0.4, end=0.6, confidence=0.99, index=2),
+        RecognizedWord(raw="gamma", normalized="gamma", start=12.0, end=12.2, confidence=0.99, index=3),
+        RecognizedWord(raw="after", normalized="after", start=12.2, end=12.4, confidence=0.99, index=4),
+        RecognizedWord(raw="long", normalized="long", start=12.4, end=12.6, confidence=0.99, index=5),
+        RecognizedWord(raw="section", normalized="section", start=12.6, end=12.8, confidence=0.99, index=6),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[0].status == "matched_global"
+    assert result[1].status != "matched_global"
+    assert result[1].details["rejected_reason"] in {
+        "gap_from_prev_line_too_large",
+        "recognized_jump_too_large",
+        "line_density_conflict",
+    }
+    assert result[1].details["gap_from_prev_line_s"] > 10.0
+    assert result[1].details["recognized_jump_words"] >= 1
+
+
+def test_align_lyric_lines_global_refines_suspicious_anchor_block_instead_of_locking_tail() -> None:
+    lyric_lines = [f"line{idx} aa bb" for idx in range(20)]
+    recognized: list[RecognizedWord] = []
+
+    word_index = 0
+    for idx, line in enumerate(lyric_lines):
+        current_time = float(idx)
+        for token in line.split():
+            recognized.append(
+                RecognizedWord(
+                    raw=token,
+                    normalized=token,
+                    start=current_time,
+                    end=current_time + 0.2,
+                    confidence=0.99,
+                    index=word_index,
+                )
+            )
+            word_index += 1
+            current_time += 0.2
+
+    for offset, token in enumerate(lyric_lines[-1].split()):
+        recognized.append(
+            RecognizedWord(
+                raw=token,
+                normalized=token,
+                start=25.0 + (offset * 0.2),
+                end=25.2 + (offset * 0.2),
+                confidence=0.99,
+                index=word_index,
+            )
+        )
+        word_index += 1
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[18].status == "matched_global_refined_block"
+    assert result[18].raw_start_seconds == pytest.approx(18.0, abs=0.01)
+    assert result[18].details["refined_from_block"] == "17:18"
+    assert result[18].details["suspicious_gap_s"] > 2.0
+    assert result[19].raw_start_seconds > 24.0
+
+
+def test_align_lyric_lines_segment_prior_rejects_far_future_match() -> None:
+    lyric_lines = [
+        "alpha intro start",
+        "beta second line",
+        "gamma closing line",
+    ]
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=0.0, end=0.2, confidence=0.99, index=0),
+        RecognizedWord(raw="intro", normalized="intro", start=0.2, end=0.4, confidence=0.99, index=1),
+        RecognizedWord(raw="start", normalized="start", start=0.4, end=0.6, confidence=0.99, index=2),
+        RecognizedWord(raw="beta", normalized="beta", start=29.0, end=29.2, confidence=0.99, index=3),
+        RecognizedWord(raw="second", normalized="second", start=29.2, end=29.4, confidence=0.99, index=4),
+        RecognizedWord(raw="line", normalized="line", start=29.4, end=29.6, confidence=0.99, index=5),
+        RecognizedWord(raw="gamma", normalized="gamma", start=30.0, end=30.2, confidence=0.99, index=6),
+        RecognizedWord(raw="closing", normalized="closing", start=30.2, end=30.4, confidence=0.99, index=7),
+        RecognizedWord(raw="line", normalized="line", start=30.4, end=30.6, confidence=0.99, index=8),
+    ]
+    segments = [SegmentInfo(start=float(idx), end=float(idx) + 1.0, text=f"seg{idx}") for idx in range(32)]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        segments=segments,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[0].status == "matched_global"
+    assert result[0].details["matched_segment_idx"] == 0
+    assert result[1].status != "matched_global"
+    assert result[1].details["matched_segment_idx"] == 29
+    assert result[1].details["segment_jump_count"] >= 27
+    assert result[1].details["segment_prior_score"] < -10.0
+    assert result[1].details["rejected_reason"] == "segment_jump_too_large"
