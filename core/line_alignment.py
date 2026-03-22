@@ -91,6 +91,15 @@ class LineAlignmentConfig:
     global_mismatch_penalty: float = 0.9
     global_gap_penalty: float = 0.7
     global_time_bonus: float = 0.45
+    global_line_jump_penalty: float = 1.2
+    global_skipped_line_penalty: float = 1.6
+    global_expected_time_penalty: float = 1.35
+    global_expected_index_penalty: float = 0.045
+    global_soft_line_time_factor: float = 1.8
+    global_soft_line_word_factor: float = 2.2
+    global_hard_line_time_factor: float = 3.6
+    global_hard_line_word_factor: float = 4.5
+    global_constraint_penalty: float = 7.5
     russian_mode: bool = False
 
 
@@ -317,77 +326,106 @@ def _global_align_tokens(
     last_word_time: float,
     total_lines: int,
 ) -> dict[int, list[_TokenMatch]]:
-    n = len(flat_tokens)
-    m = len(recognized_words)
-    if n == 0 or m == 0:
+    if not flat_tokens or not recognized_words:
         return {}
 
-    dp = [[0.0] * (m + 1) for _ in range(n + 1)]
-    ptr = [[0] * (m + 1) for _ in range(n + 1)]  # 1=diag 2=up 3=left
-
-    for i in range(1, n + 1):
-        dp[i][0] = dp[i - 1][0] - cfg.global_gap_penalty
-        ptr[i][0] = 2
-    for j in range(1, m + 1):
-        dp[0][j] = dp[0][j - 1] - cfg.global_gap_penalty
-        ptr[0][j] = 3
-
     time_span = max(5.0, last_word_time - first_word_time)
+    words_per_line = max(1.0, len(recognized_words) / max(1, total_lines))
+    seconds_per_line = time_span / max(1, total_lines - 1)
 
-    for i in range(1, n + 1):
-        text_tok = flat_tokens[i - 1]
+    candidates: list[tuple[int, int, _FlatTextToken, RecognizedWord, float]] = []
+    for flat_idx, text_tok in enumerate(flat_tokens):
         expected_time = _estimate_expected_time(text_tok.line_idx, total_lines, first_word_time, last_word_time)
-        for j in range(1, m + 1):
-            rec = recognized_words[j - 1]
-            diag_score = dp[i - 1][j - 1]
-            if text_tok.token == rec.normalized:
-                diag_score += cfg.global_match_score
-            else:
-                diag_score -= cfg.global_mismatch_penalty
-
+        for rec_idx, rec in enumerate(recognized_words):
+            if text_tok.token != rec.normalized:
+                continue
+            score = cfg.global_match_score
             if rec.start is not None:
                 dist = abs(float(rec.start) - expected_time)
-                diag_score += cfg.global_time_bonus * max(0.0, 1.0 - (dist / time_span))
+                score += cfg.global_time_bonus * max(0.0, 1.0 - (dist / time_span))
+            candidates.append((flat_idx, rec_idx, text_tok, rec, score))
 
-            up_score = dp[i - 1][j] - cfg.global_gap_penalty
-            left_score = dp[i][j - 1] - cfg.global_gap_penalty
+    if not candidates:
+        return {}
 
-            if diag_score >= up_score and diag_score >= left_score:
-                dp[i][j] = diag_score
-                ptr[i][j] = 1
-            elif up_score >= left_score:
-                dp[i][j] = up_score
-                ptr[i][j] = 2
-            else:
-                dp[i][j] = left_score
-                ptr[i][j] = 3
+    best_scores = [float('-inf')] * len(candidates)
+    prev_ptr = [-1] * len(candidates)
 
+    for idx, (flat_idx, rec_idx, text_tok, rec, base_score) in enumerate(candidates):
+        best_score = base_score - (flat_idx + rec_idx) * cfg.global_gap_penalty
+
+        current_time = float(rec.start) if rec.start is not None else _estimate_expected_time(text_tok.line_idx, total_lines, first_word_time, last_word_time)
+
+        for prev_idx in range(idx):
+            prev_flat_idx, prev_rec_idx, prev_text_tok, prev_rec, _ = candidates[prev_idx]
+            if prev_flat_idx >= flat_idx or prev_rec_idx >= rec_idx:
+                continue
+
+            token_gap = max(0, (flat_idx - prev_flat_idx) - 1)
+            rec_gap = max(0, (rec_idx - prev_rec_idx) - 1)
+            transition_score = best_scores[prev_idx] - (token_gap + rec_gap) * cfg.global_gap_penalty
+
+            line_delta = text_tok.line_idx - prev_text_tok.line_idx
+            if line_delta < 0:
+                continue
+            skipped_lines = max(0, line_delta - 1)
+            if line_delta > 1:
+                transition_score -= cfg.global_line_jump_penalty * float(line_delta - 1)
+                transition_score -= cfg.global_skipped_line_penalty * float(skipped_lines * skipped_lines)
+
+            prev_time = float(prev_rec.start) if prev_rec.start is not None else _estimate_expected_time(prev_text_tok.line_idx, total_lines, first_word_time, last_word_time)
+            remaining_lines = max(1, total_lines - 1 - prev_text_tok.line_idx)
+            remaining_words = max(1, len(recognized_words) - 1 - prev_rec_idx)
+            expected_index_step = remaining_words / float(remaining_lines)
+            expected_time_step = max(seconds_per_line, (last_word_time - prev_time) / float(remaining_lines))
+
+            expected_rec_idx = prev_rec_idx + (line_delta * expected_index_step)
+            expected_time = prev_time + (line_delta * expected_time_step)
+
+            rec_idx_dist = abs(rec_idx - expected_rec_idx)
+            time_dist = abs(current_time - expected_time)
+
+            if line_delta > 0:
+                line_scale = float(line_delta)
+                transition_score -= cfg.global_expected_index_penalty * (rec_idx_dist / line_scale)
+                transition_score -= cfg.global_expected_time_penalty * (time_dist / line_scale)
+
+                soft_word_limit = words_per_line * cfg.global_soft_line_word_factor * line_scale
+                soft_time_limit = seconds_per_line * cfg.global_soft_line_time_factor * line_scale
+                hard_word_limit = words_per_line * cfg.global_hard_line_word_factor * line_scale
+                hard_time_limit = seconds_per_line * cfg.global_hard_line_time_factor * line_scale
+
+                if rec_idx_dist > soft_word_limit:
+                    transition_score -= cfg.global_constraint_penalty * (rec_idx_dist - soft_word_limit) / max(1.0, words_per_line)
+                if time_dist > soft_time_limit:
+                    transition_score -= cfg.global_constraint_penalty * (time_dist - soft_time_limit) / max(0.5, seconds_per_line)
+                if rec_idx_dist > hard_word_limit or time_dist > hard_time_limit:
+                    overflow = max(
+                        0.0 if hard_word_limit <= 0 else (rec_idx_dist - hard_word_limit) / max(1.0, words_per_line),
+                        0.0 if hard_time_limit <= 0 else (time_dist - hard_time_limit) / max(0.5, seconds_per_line),
+                    )
+                    transition_score -= cfg.global_constraint_penalty * (4.0 + overflow + skipped_lines)
+
+            if transition_score + base_score > best_score:
+                best_score = transition_score + base_score
+                prev_ptr[idx] = prev_idx
+
+        best_scores[idx] = best_score
+
+    best_idx = max(range(len(candidates)), key=lambda candidate_idx: best_scores[candidate_idx])
     line_matches: dict[int, list[_TokenMatch]] = {}
-    i, j = n, m
-    while i > 0 and j > 0:
-        p = ptr[i][j]
-        if p == 1:
-            ft = flat_tokens[i - 1]
-            rw = recognized_words[j - 1]
-            if ft.token == rw.normalized:
-                line_matches.setdefault(ft.line_idx, []).append(
-                    _TokenMatch(token_idx_in_line=ft.token_idx_in_line, recognized_idx=j - 1)
-                )
-            i -= 1
-            j -= 1
-        elif p == 2:
-            i -= 1
-        else:
-            j -= 1
+    while best_idx >= 0:
+        _flat_idx, rec_idx, text_tok, _rec, _score = candidates[best_idx]
+        line_matches.setdefault(text_tok.line_idx, []).append(
+            _TokenMatch(token_idx_in_line=text_tok.token_idx_in_line, recognized_idx=rec_idx)
+        )
+        best_idx = prev_ptr[best_idx]
 
     for line_idx, values in list(line_matches.items()):
         dedup: dict[tuple[int, int], _TokenMatch] = {}
         for item in values:
             dedup[(item.token_idx_in_line, item.recognized_idx)] = item
-        line_matches[line_idx] = sorted(
-            dedup.values(),
-            key=lambda item: (item.token_idx_in_line, item.recognized_idx),
-        )
+        line_matches[line_idx] = sorted(dedup.values(), key=lambda item: (item.token_idx_in_line, item.recognized_idx))
 
     return line_matches
 

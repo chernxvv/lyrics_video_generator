@@ -386,3 +386,29 @@ def test_align_lyric_lines_does_not_backdate_stopword_prefix_that_may_be_unsung(
 
     assert greedy[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
     assert global_result[0].raw_start_seconds == pytest.approx(10.0, abs=0.01)
+
+
+def test_align_lyric_lines_global_penalizes_far_line_jump_even_with_overlap() -> None:
+    lyric_lines = [f"line {idx} unique" for idx in range(18)]
+    lyric_lines[0] = "alpha start begins"
+    lyric_lines[17] = "alpha finish ending"
+
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=0.0, end=0.2, confidence=0.99, index=0),
+        RecognizedWord(raw="start", normalized="start", start=0.2, end=0.4, confidence=0.99, index=1),
+        RecognizedWord(raw="begins", normalized="begins", start=0.4, end=0.6, confidence=0.99, index=2),
+        RecognizedWord(raw="alpha", normalized="alpha", start=25.0, end=25.2, confidence=0.99, index=3),
+        RecognizedWord(raw="finish", normalized="finish", start=25.2, end=25.4, confidence=0.99, index=4),
+        RecognizedWord(raw="ending", normalized="ending", start=25.4, end=25.6, confidence=0.99, index=5),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[0].status == "matched_global"
+    assert result[0].raw_start_seconds == pytest.approx(0.0, abs=0.01)
+    assert result[17].status != "matched_global"
+    assert result[17].raw_start_seconds > result[0].raw_start_seconds
