@@ -324,6 +324,25 @@ def test_align_lyric_lines_greedy_ignores_rejected_early_match_for_raw_start() -
     assert result[0].raw_start_seconds == pytest.approx(10.2, abs=0.01)
 
 
+def test_align_lyric_lines_greedy_keeps_later_matches_for_backdating_after_skipping_stopword_anchor() -> None:
+    lyric_lines = ["and we can still go home"]
+    recognized = [
+        RecognizedWord(raw="and", normalized="and", start=10.0, end=10.1, confidence=0.99, index=0),
+        RecognizedWord(raw="can", normalized="can", start=10.4, end=10.5, confidence=0.99, index=1),
+        RecognizedWord(raw="still", normalized="still", start=10.7, end=10.8, confidence=0.99, index=2),
+        RecognizedWord(raw="go", normalized="go", start=11.0, end=11.1, confidence=0.99, index=3),
+        RecognizedWord(raw="home", normalized="home", start=11.3, end=11.4, confidence=0.99, index=4),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=False),
+    )
+
+    assert result[0].anchor_word == "can"
+    assert result[0].raw_start_seconds == pytest.approx(9.8, abs=0.01)
+
 def test_align_lyric_lines_uses_true_median_gap_for_backdating() -> None:
     lyric_lines = ["and we can go"]
     recognized = [

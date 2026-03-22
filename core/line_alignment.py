@@ -658,7 +658,7 @@ def _align_lyric_lines_greedy(
                 suspicious = short or stop or weak_conf
                 if suspicious and pos + 1 < len(best_matches):
                     continue
-                trusted_matches = [match] if pos > 0 else best_matches
+                trusted_matches = best_matches[pos:] if pos > 0 else best_matches
                 anchor_idx = match.recognized_idx
                 anchor_word = rec_word.raw
                 estimated_start, _ = _estimate_line_raw_start(
