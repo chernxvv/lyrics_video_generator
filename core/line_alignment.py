@@ -317,6 +317,97 @@ def _estimate_line_raw_start(
     return estimated_start, earliest.recognized_idx
 
 
+def _is_global_match_reliable(
+    *,
+    line_idx: int,
+    line_count: int,
+    line_tokens: list[str],
+    matched: list[_TokenMatch],
+    recognized_words: list[RecognizedWord],
+    raw_start_seconds: float | None,
+    confidence: float,
+    prev_reliable_line_idx: int,
+    prev_reliable_raw_start_seconds: float | None,
+    prev_reliable_anchor_idx: int,
+    last_used_recognized_idx: int,
+    first_word_time: float,
+    last_word_time: float,
+    cfg: LineAlignmentConfig,
+) -> tuple[bool, dict[str, str | float | int]]:
+    details: dict[str, str | float | int] = {
+        "line_idx": line_idx,
+        "matches": len(matched),
+        "tokens": len(line_tokens),
+        "local_confidence": confidence,
+        "gap_from_prev_line_s": -1.0,
+        "recognized_jump_words": 0,
+        "expected_gap_s": 0.0,
+        "expected_jump_words": 0.0,
+        "density_ratio_time": 0.0,
+        "density_ratio_words": 0.0,
+    }
+    if not matched or raw_start_seconds is None:
+        details["rejected_reason"] = "missing_anchor"
+        return False, details
+
+    anchor_idx = min(match.recognized_idx for match in matched)
+    details["anchor_word_index"] = anchor_idx
+
+    if prev_reliable_line_idx >= 0 and confidence < cfg.min_local_match_score and len(matched) < 2:
+        details["rejected_reason"] = "low_local_similarity"
+        return False, details
+
+    if line_count <= 1:
+        return True, details
+
+    timeline_span = max(5.0, last_word_time - first_word_time)
+    seconds_per_line = timeline_span / max(1, line_count - 1)
+    words_per_line = max(1.0, len(recognized_words) / max(1, line_count))
+
+    if prev_reliable_raw_start_seconds is not None and prev_reliable_line_idx >= 0 and prev_reliable_anchor_idx >= 0:
+        line_delta = max(1, line_idx - prev_reliable_line_idx)
+        gap_from_prev = max(0.0, float(raw_start_seconds) - float(prev_reliable_raw_start_seconds))
+        recognized_jump_words = max(0, anchor_idx - last_used_recognized_idx)
+        expected_gap_s = seconds_per_line * line_delta
+        expected_jump_words = words_per_line * line_delta
+        details["gap_from_prev_line_s"] = gap_from_prev
+        details["recognized_jump_words"] = recognized_jump_words
+        details["expected_gap_s"] = expected_gap_s
+        details["expected_jump_words"] = expected_jump_words
+        details["density_ratio_time"] = gap_from_prev / max(0.001, expected_gap_s)
+        details["density_ratio_words"] = recognized_jump_words / max(1.0, expected_jump_words)
+
+        hard_gap_limit = max(cfg.max_line_jump_ms / 1000.0, expected_gap_s * cfg.global_hard_line_time_factor)
+        hard_word_limit = expected_jump_words * cfg.global_hard_line_word_factor
+        soft_word_limit = max(len(line_tokens) + 1.0, expected_jump_words * cfg.global_soft_line_word_factor)
+        adjacent_gap_limit = max(seconds_per_line * cfg.global_soft_line_time_factor, cfg.max_line_jump_ms / 1000.0)
+        adjacent_word_limit = max(len(line_tokens) * 2.0, words_per_line * cfg.global_soft_line_word_factor)
+
+        if line_delta == 1 and gap_from_prev > adjacent_gap_limit:
+            details["rejected_reason"] = "gap_from_prev_line_too_large"
+            return False, details
+        if line_delta == 1 and recognized_jump_words > adjacent_word_limit:
+            details["rejected_reason"] = "recognized_jump_too_large"
+            return False, details
+        if gap_from_prev > hard_gap_limit:
+            details["rejected_reason"] = "gap_from_prev_line_too_large"
+            return False, details
+        if recognized_jump_words > hard_word_limit:
+            details["rejected_reason"] = "recognized_jump_too_large"
+            return False, details
+        if (
+            details["density_ratio_time"] > cfg.global_soft_line_time_factor
+            and details["density_ratio_words"] > cfg.global_soft_line_word_factor
+        ):
+            details["rejected_reason"] = "line_density_conflict"
+            return False, details
+        if recognized_jump_words > soft_word_limit and gap_from_prev < max(seconds_per_line, expected_gap_s * 0.75):
+            details["rejected_reason"] = "recognized_jump_without_time_support"
+            return False, details
+
+    return True, details
+
+
 def _global_align_tokens(
     flat_tokens: list[_FlatTextToken],
     recognized_words: list[RecognizedWord],
@@ -823,9 +914,15 @@ def _align_lyric_lines_global(
     statuses: list[str] = ["unresolved"] * len(lyric_lines)
     anchor_words: list[str] = ["" for _ in lyric_lines]
     anchor_indices: list[int] = [-1 for _ in lyric_lines]
+    line_details: list[dict[str, str | float | int]] = [{"line_idx": i, "tokens": len(line_tokens[i]), "low_info_line": int(low_info_mask[i])} for i in range(len(lyric_lines))]
 
     anchored_strong_lines = 0
     interpolated_low_info_lines = 0
+    global_rejection_count = 0
+    prev_reliable_line_idx = -1
+    prev_reliable_raw_start: float | None = None
+    prev_reliable_anchor_idx = -1
+    last_used_recognized_idx = -1
 
     for i in range(len(lyric_lines)):
         if not strong_mask[i]:
@@ -838,14 +935,37 @@ def _align_lyric_lines_global(
                 line_tokens[i],
                 russian_mode=cfg.russian_mode,
             )
-            if start is not None:
+            confidence = min(1.0, len(matched) / max(1.0, len(line_tokens[i])))
+            reliable, reliability_details = _is_global_match_reliable(
+                line_idx=i,
+                line_count=len(lyric_lines),
+                line_tokens=line_tokens[i],
+                matched=matched,
+                recognized_words=recognized_words,
+                raw_start_seconds=start,
+                confidence=confidence,
+                prev_reliable_line_idx=prev_reliable_line_idx,
+                prev_reliable_raw_start_seconds=prev_reliable_raw_start,
+                prev_reliable_anchor_idx=prev_reliable_anchor_idx,
+                last_used_recognized_idx=last_used_recognized_idx,
+                first_word_time=first_word_time,
+                last_word_time=last_word_time,
+                cfg=cfg,
+            )
+            line_details[i].update(reliability_details)
+            if reliable and start is not None and idx >= 0:
                 raw_starts[i] = float(start)
-                confidences[i] = min(1.0, len(matched) / max(1.0, len(line_tokens[i])))
+                confidences[i] = confidence
                 statuses[i] = "matched_global"
                 anchor_words[i] = recognized_words[idx].raw
                 anchor_indices[i] = idx
                 anchored_strong_lines += 1
+                prev_reliable_line_idx = i
+                prev_reliable_raw_start = float(start)
+                prev_reliable_anchor_idx = idx
+                last_used_recognized_idx = max(last_used_recognized_idx, max(match.recognized_idx for match in matched))
                 continue
+            global_rejection_count += 1
 
         statuses[i] = "fallback_global"
 
@@ -911,17 +1031,14 @@ def _align_lyric_lines_global(
                 anchor_word=anchor_words[i],
                 anchor_word_index=anchor_indices[i],
                 raw_start_seconds=raw_start,
-                details={
-                    "line_idx": i,
-                    "tokens": len(line_tokens[i]),
-                    "low_info_line": int(low_info_mask[i]),
-                },
+                details=line_details[i],
             )
         )
 
     stats = {
         "anchored_strong_lines": anchored_strong_lines,
         "interpolated_low_info_lines": interpolated_low_info_lines,
+        "global_rejection_count": global_rejection_count,
     }
     return results, strong_mask, stats
 

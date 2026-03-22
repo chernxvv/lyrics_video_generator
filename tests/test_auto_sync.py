@@ -412,3 +412,36 @@ def test_align_lyric_lines_global_penalizes_far_line_jump_even_with_overlap() ->
     assert result[0].raw_start_seconds == pytest.approx(0.0, abs=0.01)
     assert result[17].status != "matched_global"
     assert result[17].raw_start_seconds > result[0].raw_start_seconds
+
+
+def test_align_lyric_lines_global_rejects_late_local_match_when_previous_line_is_recent() -> None:
+    lyric_lines = [
+        "alpha start now",
+        "gamma after long section",
+        "delta missing outro",
+    ]
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=0.0, end=0.2, confidence=0.99, index=0),
+        RecognizedWord(raw="start", normalized="start", start=0.2, end=0.4, confidence=0.99, index=1),
+        RecognizedWord(raw="now", normalized="now", start=0.4, end=0.6, confidence=0.99, index=2),
+        RecognizedWord(raw="gamma", normalized="gamma", start=12.0, end=12.2, confidence=0.99, index=3),
+        RecognizedWord(raw="after", normalized="after", start=12.2, end=12.4, confidence=0.99, index=4),
+        RecognizedWord(raw="long", normalized="long", start=12.4, end=12.6, confidence=0.99, index=5),
+        RecognizedWord(raw="section", normalized="section", start=12.6, end=12.8, confidence=0.99, index=6),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[0].status == "matched_global"
+    assert result[1].status != "matched_global"
+    assert result[1].details["rejected_reason"] in {
+        "gap_from_prev_line_too_large",
+        "recognized_jump_too_large",
+        "line_density_conflict",
+    }
+    assert result[1].details["gap_from_prev_line_s"] > 10.0
+    assert result[1].details["recognized_jump_words"] >= 1
