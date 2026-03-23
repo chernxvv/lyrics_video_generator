@@ -9,7 +9,13 @@ if str(ROOT) not in sys.path:
 
 from core.auto_sync import AutoSyncError, _split_lyrics_text, auto_sync_lyrics
 from models import LyricLine
-from core.line_alignment import LineAlignmentConfig, RecognizedWord, SegmentInfo, align_lyric_lines
+from core.line_alignment import (
+    LineAlignmentConfig,
+    RecognizedWord,
+    SegmentInfo,
+    _find_segment_fallback_start,
+    align_lyric_lines,
+)
 
 
 def test_split_lyrics_text_strips_and_ignores_empty_lines() -> None:
@@ -527,3 +533,43 @@ def test_align_lyric_lines_segment_prior_rejects_far_future_match() -> None:
     assert result[1].details["segment_jump_count"] >= 27
     assert result[1].details["segment_prior_score"] < -10.0
     assert result[1].details["rejected_reason"] == "segment_jump_too_large"
+
+
+def test_align_lyric_lines_global_does_not_promote_far_future_segment_fallback() -> None:
+    lyric_lines = [
+        "Это стало ужасно",
+        "Не резко, а медленно",
+        "Как будто мир стирает краски небрежно",
+    ]
+    recognized = [
+        RecognizedWord(raw="Это", normalized="это", start=0.30, end=0.45, confidence=0.99, index=0),
+        RecognizedWord(raw="стало", normalized="стало", start=0.46, end=0.60, confidence=0.99, index=1),
+        RecognizedWord(raw="ужасно", normalized="ужасно", start=0.61, end=0.82, confidence=0.99, index=2),
+        RecognizedWord(raw="не", normalized="не", start=30.17, end=30.25, confidence=0.99, index=3),
+        RecognizedWord(raw="резко", normalized="резко", start=30.26, end=30.40, confidence=0.99, index=4),
+        RecognizedWord(raw="а", normalized="а", start=30.41, end=30.46, confidence=0.99, index=5),
+        RecognizedWord(raw="медленно", normalized="медленно", start=30.47, end=30.70, confidence=0.99, index=6),
+    ]
+    segments = [
+        SegmentInfo(start=0.30, end=0.90, text="Это стало ужасно"),
+        SegmentInfo(start=30.17, end=30.80, text="Не резко, а медленно"),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        segments=segments,
+        config=LineAlignmentConfig(russian_mode=True, use_global_alignment=True),
+    )
+
+    assert result[0].status == "matched_global"
+    assert result[1].status == "fallback_gap"
+    assert result[1].raw_start_seconds < 5.0
+    assert result[1].details["rejected_reason"] == "segment_jump_too_large"
+    assert result[2].raw_start_seconds >= result[1].raw_start_seconds
+
+
+def test_find_segment_fallback_start_does_not_wrap_to_first_segment() -> None:
+    segments = [SegmentInfo(start=3.0, end=4.0, text="seg")]
+
+    assert _find_segment_fallback_start(segments, prev_start=10.0, min_gap_s=0.12) is None
