@@ -420,6 +420,38 @@ def test_align_lyric_lines_global_penalizes_far_line_jump_even_with_overlap() ->
     assert result[17].raw_start_seconds > result[0].raw_start_seconds
 
 
+def test_align_lyric_lines_global_ignores_low_info_lines_when_penalizing_skips() -> None:
+    lyric_lines = [
+        "alpha beta gamma",
+        "now run echo",
+        "we echo",
+        "bright the",
+        "and go now alpha",
+    ]
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=0.0, end=0.2, confidence=0.99, index=0),
+        RecognizedWord(raw="beta", normalized="beta", start=0.3, end=0.5, confidence=0.99, index=1),
+        RecognizedWord(raw="gamma", normalized="gamma", start=0.6, end=0.8, confidence=0.99, index=2),
+        RecognizedWord(raw="now", normalized="now", start=1.8, end=2.0, confidence=0.99, index=3),
+        RecognizedWord(raw="run", normalized="run", start=2.1, end=2.3, confidence=0.99, index=4),
+        RecognizedWord(raw="echo", normalized="echo", start=2.4, end=2.6, confidence=0.99, index=5),
+        RecognizedWord(raw="and", normalized="and", start=5.0, end=5.2, confidence=0.99, index=6),
+        RecognizedWord(raw="go", normalized="go", start=5.3, end=5.5, confidence=0.99, index=7),
+        RecognizedWord(raw="now", normalized="now", start=5.6, end=5.8, confidence=0.99, index=8),
+        RecognizedWord(raw="alpha", normalized="alpha", start=5.9, end=6.1, confidence=0.99, index=9),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[4].status == "matched_global"
+    assert result[4].raw_start_seconds == pytest.approx(5.0, abs=0.01)
+    assert result[4].anchor_word == "and"
+
+
 def test_align_lyric_lines_global_rejects_late_local_match_when_previous_line_is_recent() -> None:
     lyric_lines = [
         "alpha start now",

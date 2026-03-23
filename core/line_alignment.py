@@ -1036,6 +1036,11 @@ def _global_align_tokens(
     if not candidates:
         return {}
 
+    strong_line_order: dict[int, int] = {}
+    for text_tok in flat_tokens:
+        if text_tok.line_idx not in strong_line_order:
+            strong_line_order[text_tok.line_idx] = len(strong_line_order)
+
     best_scores = [float('-inf')] * len(candidates)
     prev_ptr = [-1] * len(candidates)
 
@@ -1056,9 +1061,10 @@ def _global_align_tokens(
             line_delta = text_tok.line_idx - prev_text_tok.line_idx
             if line_delta < 0:
                 continue
-            skipped_lines = max(0, line_delta - 1)
-            if line_delta > 1:
-                transition_score -= cfg.global_line_jump_penalty * float(line_delta - 1)
+            strong_line_delta = strong_line_order[text_tok.line_idx] - strong_line_order[prev_text_tok.line_idx]
+            skipped_lines = max(0, strong_line_delta - 1)
+            if strong_line_delta > 1:
+                transition_score -= cfg.global_line_jump_penalty * float(strong_line_delta - 1)
                 transition_score -= cfg.global_skipped_line_penalty * float(skipped_lines * skipped_lines)
 
             prev_time = float(prev_rec.start) if prev_rec.start is not None else _estimate_expected_time(prev_text_tok.line_idx, total_lines, first_word_time, last_word_time)
