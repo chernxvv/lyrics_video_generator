@@ -755,10 +755,31 @@ def _find_segment_fallback_start(segments: list[SegmentInfo], prev_start: float,
     for seg in segments:
         if seg.start is not None and seg.start >= target:
             return float(seg.start)
-    for seg in segments:
-        if seg.start is not None:
-            return float(seg.start)
     return None
+
+
+def _is_segment_fallback_plausible(
+    *,
+    candidate_start: float,
+    prev_start: float | None,
+    line_idx: int,
+    total_lines: int,
+    first_word_time: float,
+    last_word_time: float,
+    cfg: LineAlignmentConfig,
+    min_gap_s: float,
+) -> bool:
+    if prev_start is None:
+        return True
+
+    expected_current = _estimate_expected_time(line_idx, total_lines, first_word_time, last_word_time)
+    expected_previous = _estimate_expected_time(max(0, line_idx - 1), total_lines, first_word_time, last_word_time)
+    expected_gap_s = max(min_gap_s, expected_current - expected_previous)
+    allowed_gap_s = max(
+        cfg.max_line_jump_ms / 1000.0,
+        expected_gap_s * max(1.0, cfg.global_soft_line_time_factor),
+    )
+    return (candidate_start - prev_start) <= allowed_gap_s
 
 
 def _estimate_expected_time(line_idx: int, line_count: int, first_word_time: float, last_word_time: float) -> float:
@@ -1741,12 +1762,27 @@ def _align_lyric_lines_global(
             line_details[i]["segment_jump_count"] = diagnostic_prior.segment_jump_count
             line_details[i]["segment_prior_score"] = round(diagnostic_prior.prior_score, 4)
             line_details[i].setdefault("rejected_reason", "segment_jump_too_large")
-        if cfg.allow_segment_fallback:
+        allow_segment_fallback = cfg.allow_segment_fallback
+        rejected_reason = str(line_details[i].get("rejected_reason") or "")
+        if rejected_reason in {"segment_jump_too_large", "gap_from_prev_line_too_large", "recognized_jump_too_large", "line_density_conflict"}:
+            allow_segment_fallback = False
+        if allow_segment_fallback:
             seg_start = _find_segment_fallback_start(segments, prev_start=(prev or -min_gap_s), min_gap_s=min_gap_s)
-            if seg_start is not None:
+            if seg_start is not None and _is_segment_fallback_plausible(
+                candidate_start=seg_start,
+                prev_start=prev,
+                line_idx=i,
+                total_lines=len(lyric_lines),
+                first_word_time=first_word_time,
+                last_word_time=last_word_time,
+                cfg=cfg,
+                min_gap_s=min_gap_s,
+            ):
                 raw_starts[i] = seg_start
                 statuses[i] = "fallback_segment"
                 continue
+            if seg_start is not None:
+                line_details[i].setdefault("rejected_reason", "segment_fallback_too_far_ahead")
         raw_starts[i] = (prev + min_gap_s) if prev is not None else 0.0
         statuses[i] = "fallback_gap"
 
