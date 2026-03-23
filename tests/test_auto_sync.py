@@ -453,6 +453,23 @@ def test_align_lyric_lines_global_ignores_low_info_lines_when_penalizing_skips()
     assert result[4].anchor_word == "and"
 
 
+def test_segment_fallback_is_not_blocked_by_stale_segment_jump_rejection() -> None:
+    diagnostic_prior = line_alignment._SegmentPrior(
+        expected_start_idx=1,
+        expected_end_idx=1,
+        matched_segment_idx=1,
+        segment_jump_count=0,
+        prior_score=1.0,
+    )
+
+    assert not line_alignment._should_block_segment_fallback(
+        "segment_jump_too_large",
+        diagnostic_prior,
+        line_idx=1,
+        prev_line_idx=0,
+    )
+
+
 def test_align_lyric_lines_global_rejects_late_local_match_when_previous_line_is_recent() -> None:
     lyric_lines = [
         "alpha start now",

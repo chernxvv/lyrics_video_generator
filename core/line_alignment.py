@@ -782,6 +782,24 @@ def _is_segment_fallback_plausible(
     return (candidate_start - prev_start) <= allowed_gap_s
 
 
+def _should_block_segment_fallback(
+    rejected_reason: str,
+    diagnostic_prior: _SegmentPrior | None,
+    *,
+    line_idx: int,
+    prev_line_idx: int,
+) -> bool:
+    if rejected_reason in {"gap_from_prev_line_too_large", "recognized_jump_too_large", "line_density_conflict"}:
+        return True
+    if rejected_reason != "segment_jump_too_large":
+        return False
+    if diagnostic_prior is None:
+        return True
+    if diagnostic_prior.segment_jump_count <= max(0, line_idx - prev_line_idx):
+        return False
+    return diagnostic_prior.prior_score < -1.5
+
+
 def _estimate_expected_time(line_idx: int, line_count: int, first_word_time: float, last_word_time: float) -> float:
     if line_count <= 1:
         return first_word_time
@@ -1742,6 +1760,7 @@ def _align_lyric_lines_global(
         prev = max((raw_starts[k] for k in range(i - 1, -1, -1) if raw_starts[k] is not None), default=None)
         prev_line_idx = max((k for k in range(i - 1, -1, -1) if raw_starts[k] is not None and strong_mask[k]), default=-1)
         prev_segment_idx = _time_to_segment_idx(segments, prev)
+        diagnostic_prior: _SegmentPrior | None = None
         diagnostic_candidates = _build_local_block_candidates(
             i,
             line_tokens,
@@ -1775,7 +1794,12 @@ def _align_lyric_lines_global(
                 line_details[i].setdefault("rejected_reason", "segment_jump_too_large")
         allow_segment_fallback = cfg.allow_segment_fallback
         rejected_reason = str(line_details[i].get("rejected_reason") or "")
-        if rejected_reason in {"segment_jump_too_large", "gap_from_prev_line_too_large", "recognized_jump_too_large", "line_density_conflict"}:
+        if _should_block_segment_fallback(
+            rejected_reason,
+            diagnostic_prior,
+            line_idx=i,
+            prev_line_idx=prev_line_idx,
+        ):
             allow_segment_fallback = False
         if allow_segment_fallback:
             seg_start = _find_segment_fallback_start(segments, prev_start=(prev or -min_gap_s), min_gap_s=min_gap_s)
