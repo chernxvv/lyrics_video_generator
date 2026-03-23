@@ -1768,7 +1768,11 @@ def _align_lyric_lines_global(
             line_details[i]["matched_segment_idx"] = diagnostic_prior.matched_segment_idx
             line_details[i]["segment_jump_count"] = diagnostic_prior.segment_jump_count
             line_details[i]["segment_prior_score"] = round(diagnostic_prior.prior_score, 4)
-            line_details[i].setdefault("rejected_reason", "segment_jump_too_large")
+            if (
+                diagnostic_prior.segment_jump_count > max(0, i - prev_line_idx)
+                and diagnostic_prior.prior_score < -1.5
+            ):
+                line_details[i].setdefault("rejected_reason", "segment_jump_too_large")
         allow_segment_fallback = cfg.allow_segment_fallback
         rejected_reason = str(line_details[i].get("rejected_reason") or "")
         if rejected_reason in {"segment_jump_too_large", "gap_from_prev_line_too_large", "recognized_jump_too_large", "line_density_conflict"}:

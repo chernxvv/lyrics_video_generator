@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
 
 from core.auto_sync import AutoSyncError, _split_lyrics_text, auto_sync_lyrics
 from models import LyricLine
+import core.line_alignment as line_alignment
 from core.line_alignment import (
     LineAlignmentConfig,
     RecognizedWord,
@@ -567,6 +568,46 @@ def test_align_lyric_lines_segment_prior_rejects_far_future_match() -> None:
     assert result[1].details["rejected_reason"] == "segment_jump_too_large"
 
 
+def test_align_lyric_lines_global_keeps_plausible_segment_fallback_after_local_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
+    lyric_lines = [
+        "opening anchor intro",
+        "gamma alpha echo",
+    ]
+    recognized = [
+        RecognizedWord(raw="opening", normalized="opening", start=0.20, end=0.35, confidence=0.99, index=0),
+        RecognizedWord(raw="anchor", normalized="anchor", start=0.36, end=0.50, confidence=0.99, index=1),
+        RecognizedWord(raw="intro", normalized="intro", start=0.51, end=0.66, confidence=0.99, index=2),
+        RecognizedWord(raw="gamma", normalized="gamma", start=1.40, end=1.55, confidence=0.99, index=3),
+    ]
+    segments = [
+        SegmentInfo(start=0.20, end=0.70, text="opening anchor intro"),
+        SegmentInfo(start=1.40, end=1.90, text="gamma alpha echo"),
+    ]
+
+    def fake_global_align_tokens(*_args, **_kwargs):
+        return {0: [
+            line_alignment._TokenMatch(token_idx_in_line=0, recognized_idx=0),
+            line_alignment._TokenMatch(token_idx_in_line=1, recognized_idx=1),
+            line_alignment._TokenMatch(token_idx_in_line=2, recognized_idx=2),
+        ]}
+
+    monkeypatch.setattr(line_alignment, "_global_align_tokens", fake_global_align_tokens)
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        segments=segments,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[0].status == "matched_global"
+    assert result[1].status == "fallback_segment"
+    assert result[1].raw_start_seconds == pytest.approx(1.40, abs=0.01)
+    assert result[1].details["matched_segment_idx"] == 1
+    assert result[1].details["segment_jump_count"] == 0
+    assert result[1].details.get("rejected_reason") != "segment_jump_too_large"
+
+
 def test_align_lyric_lines_global_does_not_promote_far_future_segment_fallback() -> None:
     lyric_lines = [
         "Это стало ужасно",
@@ -597,7 +638,7 @@ def test_align_lyric_lines_global_does_not_promote_far_future_segment_fallback()
     assert result[0].status == "matched_global"
     assert result[1].status == "fallback_gap"
     assert result[1].raw_start_seconds < 5.0
-    assert result[1].details["rejected_reason"] == "segment_jump_too_large"
+    assert result[1].details["rejected_reason"] == "segment_fallback_too_far_ahead"
     assert result[2].raw_start_seconds >= result[1].raw_start_seconds
 
 
