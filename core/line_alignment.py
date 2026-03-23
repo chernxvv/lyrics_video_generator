@@ -355,7 +355,7 @@ def _evaluate_window_candidates(
     prev_confirmed_segment_idx: int,
 ) -> tuple[list[tuple[float, int, list[_TokenMatch], _SegmentPrior | None]], str]:
     max_window = max(len(tokens) + cfg.max_window_extra_words, len(tokens) * 3)
-    span_words = max(1, window.end_idx - window.start_idx + 1)
+    cursor_prior_span_words = max(1, cfg.max_candidate_lookahead_words)
     candidates: list[tuple[float, int, list[_TokenMatch], _SegmentPrior | None]] = []
     matched_starts = 0
     for ridx in range(window.start_idx, min(len(recognized_words), window.end_idx + 1)):
@@ -368,7 +368,7 @@ def _evaluate_window_candidates(
             time_span=timeline_span,
             time_prior_weight=cfg.time_prior_weight,
             cursor_index=cursor_index,
-            cursor_span_words=span_words,
+            cursor_span_words=cursor_prior_span_words,
             cursor_prior_weight=cfg.cursor_prior_weight,
             segment_expected_match_bonus=cfg.segment_expected_match_bonus,
             segment_jump_penalty=cfg.segment_jump_penalty,
@@ -412,7 +412,7 @@ def _build_local_block_candidates(
     expected_time = _estimate_expected_time(line_idx, len(line_tokens_all), first_word_time, last_word_time)
     time_span = max(5.0, last_word_time - first_word_time)
     max_window = max(len(tokens) + cfg.max_window_extra_words, len(tokens) * 3)
-    cursor_span_words = max(1, cursor_end - cursor_start + 1)
+    cursor_span_words = max(1, cfg.max_candidate_lookahead_words)
 
     built: list[_LocalBlockCandidate] = []
     for ridx in range(max(0, cursor_start), min(len(recognized_words) - 1, cursor_end) + 1):
@@ -1062,9 +1062,10 @@ def _global_align_tokens(
             if line_delta < 0:
                 continue
             strong_line_delta = strong_line_order[text_tok.line_idx] - strong_line_order[prev_text_tok.line_idx]
-            skipped_lines = max(0, strong_line_delta - 1)
-            if strong_line_delta > 1:
-                transition_score -= cfg.global_line_jump_penalty * float(strong_line_delta - 1)
+            effective_line_delta = max(0, strong_line_delta)
+            skipped_lines = max(0, effective_line_delta - 1)
+            if effective_line_delta > 1:
+                transition_score -= cfg.global_line_jump_penalty * float(effective_line_delta - 1)
                 transition_score -= cfg.global_skipped_line_penalty * float(skipped_lines * skipped_lines)
 
             prev_time = float(prev_rec.start) if prev_rec.start is not None else _estimate_expected_time(prev_text_tok.line_idx, total_lines, first_word_time, last_word_time)
@@ -1073,14 +1074,14 @@ def _global_align_tokens(
             expected_index_step = remaining_words / float(remaining_lines)
             expected_time_step = max(seconds_per_line, (last_word_time - prev_time) / float(remaining_lines))
 
-            expected_rec_idx = prev_rec_idx + (line_delta * expected_index_step)
-            expected_time = prev_time + (line_delta * expected_time_step)
+            expected_rec_idx = prev_rec_idx + (effective_line_delta * expected_index_step)
+            expected_time = prev_time + (effective_line_delta * expected_time_step)
 
             rec_idx_dist = abs(rec_idx - expected_rec_idx)
             time_dist = abs(current_time - expected_time)
 
-            if line_delta > 0:
-                line_scale = float(line_delta)
+            if effective_line_delta > 0:
+                line_scale = float(effective_line_delta)
                 transition_score -= cfg.global_expected_index_penalty * (rec_idx_dist / line_scale)
                 transition_score -= cfg.global_expected_time_penalty * (time_dist / line_scale)
 
