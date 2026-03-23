@@ -605,3 +605,74 @@ def test_find_segment_fallback_start_does_not_wrap_to_first_segment() -> None:
     segments = [SegmentInfo(start=3.0, end=4.0, text="seg")]
 
     assert _find_segment_fallback_start(segments, prev_start=10.0, min_gap_s=0.12) is None
+
+
+def test_align_lyric_lines_greedy_keeps_exact_later_match_over_overlap() -> None:
+    lyric_lines = [
+        "home oh we",
+        "bright go alpha alpha",
+        "alpha night i night",
+        "now delta run",
+    ]
+    recognized = [
+        RecognizedWord(raw="home", normalized="home", start=0.10, end=0.25, confidence=0.99, index=0),
+        RecognizedWord(raw="oh", normalized="oh", start=0.35, end=0.45, confidence=0.99, index=1),
+        RecognizedWord(raw="we", normalized="we", start=0.55, end=0.65, confidence=0.99, index=2),
+        RecognizedWord(raw="bright", normalized="bright", start=1.20, end=1.35, confidence=0.99, index=3),
+        RecognizedWord(raw="go", normalized="go", start=1.45, end=1.55, confidence=0.99, index=4),
+        RecognizedWord(raw="alpha", normalized="alpha", start=1.65, end=1.78, confidence=0.99, index=5),
+        RecognizedWord(raw="alpha", normalized="alpha", start=2.30, end=2.45, confidence=0.99, index=6),
+        RecognizedWord(raw="alpha", normalized="alpha", start=3.70, end=3.85, confidence=0.99, index=7),
+        RecognizedWord(raw="night", normalized="night", start=3.95, end=4.08, confidence=0.99, index=8),
+        RecognizedWord(raw="i", normalized="i", start=4.18, end=4.28, confidence=0.99, index=9),
+        RecognizedWord(raw="night", normalized="night", start=4.38, end=4.52, confidence=0.99, index=10),
+        RecognizedWord(raw="now", normalized="now", start=5.10, end=5.20, confidence=0.99, index=11),
+        RecognizedWord(raw="delta", normalized="delta", start=5.30, end=5.45, confidence=0.99, index=12),
+        RecognizedWord(raw="run", normalized="run", start=5.50, end=5.62, confidence=0.99, index=13),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=False),
+    )
+
+    assert result[2].status == "matched"
+    assert result[2].raw_start_seconds == pytest.approx(3.70, abs=0.01)
+    assert result[2].anchor_word_index == 7
+
+
+def test_align_lyric_lines_global_ignores_low_info_lines_in_transition_penalties() -> None:
+    lyric_lines = [
+        "alpha beta gamma",
+        "now run echo",
+        "we echo",
+        "bright the",
+        "and go now alpha",
+    ]
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=0.20, end=0.32, confidence=0.99, index=0),
+        RecognizedWord(raw="beta", normalized="beta", start=0.40, end=0.52, confidence=0.99, index=1),
+        RecognizedWord(raw="gamma", normalized="gamma", start=0.60, end=0.72, confidence=0.99, index=2),
+        RecognizedWord(raw="now", normalized="now", start=1.30, end=1.42, confidence=0.99, index=3),
+        RecognizedWord(raw="run", normalized="run", start=1.50, end=1.62, confidence=0.99, index=4),
+        RecognizedWord(raw="echo", normalized="echo", start=1.70, end=1.82, confidence=0.99, index=5),
+        RecognizedWord(raw="we", normalized="we", start=2.40, end=2.52, confidence=0.99, index=6),
+        RecognizedWord(raw="echo", normalized="echo", start=2.60, end=2.72, confidence=0.99, index=7),
+        RecognizedWord(raw="bright", normalized="bright", start=3.30, end=3.42, confidence=0.99, index=8),
+        RecognizedWord(raw="the", normalized="the", start=3.50, end=3.62, confidence=0.99, index=9),
+        RecognizedWord(raw="and", normalized="and", start=5.60, end=5.72, confidence=0.99, index=10),
+        RecognizedWord(raw="go", normalized="go", start=5.80, end=5.92, confidence=0.99, index=11),
+        RecognizedWord(raw="now", normalized="now", start=6.00, end=6.12, confidence=0.99, index=12),
+        RecognizedWord(raw="alpha", normalized="alpha", start=6.20, end=6.32, confidence=0.99, index=13),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[4].status == "matched_global"
+    assert result[4].raw_start_seconds == pytest.approx(5.60, abs=0.01)
+    assert result[4].anchor_word_index == 10
