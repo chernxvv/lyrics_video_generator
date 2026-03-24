@@ -30,6 +30,7 @@ from core.line_alignment import (
     LineAlignmentConfig,
     RecognizedWord,
     SegmentInfo,
+    LineTimingResult,
     align_lyric_lines,
     build_recognized_words,
 )
@@ -108,6 +109,74 @@ def _extract_words_and_segments(aligned_result: dict) -> tuple[list[dict], list[
     return words, segments
 
 
+def _transcription_coverage_is_too_low(
+    *,
+    transcription: dict,
+    audio_duration_s: float,
+    lyric_line_count: int,
+) -> bool:
+    segments = transcription.get("segments") or []
+    if not segments:
+        return True
+
+    last_segment_end = 0.0
+    for segment in segments:
+        seg_end = segment.get("end")
+        if seg_end is None:
+            continue
+        last_segment_end = max(last_segment_end, float(seg_end))
+
+    word_count = 0
+    for segment in segments:
+        words = segment.get("words")
+        if words:
+            word_count += len(words)
+
+    covered_ratio = 0.0 if audio_duration_s <= 0 else (last_segment_end / max(1e-6, audio_duration_s))
+    min_expected_words = max(8, lyric_line_count * 2)
+    return covered_ratio < 0.78 or word_count < min_expected_words
+
+
+def _alignment_material_is_too_sparse(*, recognized_word_count: int, lyric_line_count: int) -> bool:
+    return recognized_word_count < max(24, lyric_line_count * 3)
+
+
+def _should_prefer_retry_source(*, current_word_count: int, retry_word_count: int) -> bool:
+    if retry_word_count <= current_word_count:
+        return False
+    # Избегаем лишних переключений источника ради минимального прироста.
+    min_delta = max(8, int(current_word_count * 0.15))
+    return (retry_word_count - current_word_count) >= min_delta
+
+
+def _whisperx_alignment_quality_is_poor(
+    *,
+    line_results: list[LineTimingResult],
+    track_duration_s: float,
+    recognized_word_count: int,
+) -> tuple[bool, str]:
+    if not line_results:
+        return True, "empty_line_results"
+
+    total = len(line_results)
+    fallback_lines = sum(1 for item in line_results if item.status.startswith("fallback"))
+    matched_lines = [item for item in line_results if item.status.startswith("matched")]
+    fallback_ratio = fallback_lines / max(1, total)
+    latest_matched_start = max((item.start_time_seconds for item in matched_lines), default=0.0)
+    coverage_ratio = 0.0 if track_duration_s <= 0 else (latest_matched_start / max(1e-6, track_duration_s))
+    words_per_line = recognized_word_count / max(1, total)
+
+    if coverage_ratio < 0.62:
+        return True, f"low_timeline_coverage:{coverage_ratio:.3f}"
+    if fallback_ratio > 0.35 and coverage_ratio < 0.78:
+        return True, f"high_fallback_ratio:{fallback_ratio:.3f}"
+    if fallback_ratio > 0.42:
+        return True, f"too_many_fallbacks:{fallback_ratio:.3f}"
+    if words_per_line < 2.8 and coverage_ratio < 0.82:
+        return True, f"sparse_alignment_material:{words_per_line:.3f}"
+    return False, ""
+
+
 def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[LyricLine]:
     try:
         import whisperx
@@ -160,44 +229,125 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
                 category=UserWarning,
             )
 
-            audio = whisperx.load_audio(source_audio)
-            try:
-                model = whisperx.load_model(
-                    "small",
+            align_model, metadata = whisperx.load_align_model(language_code=language_code, device=device)
+
+            def transcribe_with_recovery(audio_file: str, *, label: str) -> tuple[dict, np.ndarray]:
+                loaded_audio = whisperx.load_audio(audio_file)
+                try:
+                    model = whisperx.load_model(
+                        "small",
+                        device,
+                        compute_type=compute_type,
+                        language=language_code,
+                        vad_method="silero",
+                    )
+                    used_vad_local = True
+                except TypeError:
+                    model = whisperx.load_model("small", device, compute_type=compute_type, language=language_code)
+                    used_vad_local = False
+                local_transcription = model.transcribe(loaded_audio, batch_size=8)
+
+                if used_vad_local and _transcription_coverage_is_too_low(
+                    transcription=local_transcription,
+                    audio_duration_s=duration,
+                    lyric_line_count=len(lines),
+                ):
+                    logger.warning(
+                        "Автосинхронизация: низкое покрытие сегментов с VAD на %s, повторяем транскрипцию через "
+                        "альтернативный VAD (duration=%.2fs, segments=%d)",
+                        label,
+                        duration,
+                        len(local_transcription.get("segments") or []),
+                    )
+                    model_retry = whisperx.load_model(
+                        "small",
+                        device,
+                        compute_type=compute_type,
+                        language=language_code,
+                    )
+                    retry_transcription = model_retry.transcribe(loaded_audio, batch_size=8)
+                    if not _transcription_coverage_is_too_low(
+                        transcription=retry_transcription,
+                        audio_duration_s=duration,
+                        lyric_line_count=len(lines),
+                    ):
+                        local_transcription = retry_transcription
+
+                return local_transcription, loaded_audio
+
+            def align_for_source(audio_file: str, *, label: str) -> tuple[list[dict], list[dict]]:
+                local_transcription, loaded_audio = transcribe_with_recovery(audio_file, label=label)
+                local_segments = local_transcription.get("segments") or []
+                if not local_segments:
+                    return [], []
+                aligned_local = whisperx.align(
+                    local_segments,
+                    align_model,
+                    metadata,
+                    loaded_audio,
                     device,
-                    compute_type=compute_type,
-                    language=language_code,
-                    vad_method="silero",
+                    return_char_alignments=False,
                 )
-            except TypeError:
-                # WhisperX старых версий может не поддерживать vad_method.
-                model = whisperx.load_model("small", device, compute_type=compute_type, language=language_code)
-            transcription = model.transcribe(audio, batch_size=8)
+                return _extract_words_and_segments(aligned_local)
 
-        segments = transcription.get("segments") or []
-        if not segments:
+            words_raw, segments_raw = align_for_source(source_audio, label=source_type)
+            recognized_words = build_recognized_words(words_raw, russian_mode=russian_mode)
+
+            if source_type == "vocals_stem" and _alignment_material_is_too_sparse(
+                recognized_word_count=len(recognized_words),
+                lyric_line_count=len(lines),
+            ):
+                logger.warning(
+                    "Автосинхронизация: слишком мало выровненных слов на vocals stem (words=%d, lines=%d), "
+                    "повторяем pipeline на full mix",
+                    len(recognized_words),
+                    len(lines),
+                )
+                words_mix_raw, segments_mix_raw = align_for_source(audio_path, label="full_mix")
+                recognized_words_mix = build_recognized_words(words_mix_raw, russian_mode=russian_mode)
+                if _should_prefer_retry_source(
+                    current_word_count=len(recognized_words),
+                    retry_word_count=len(recognized_words_mix),
+                ):
+                    source_audio = audio_path
+                    source_type = "full_mix_recovered"
+                    words_raw = words_mix_raw
+                    segments_raw = segments_mix_raw
+                    recognized_words = recognized_words_mix
+
+        if not segments_raw:
             raise AutoSyncError("WhisperX не вернул сегменты транскрипции")
-
-        align_model, metadata = whisperx.load_align_model(language_code=language_code, device=device)
-        aligned = whisperx.align(
-            segments,
-            align_model,
-            metadata,
-            audio,
-            device,
-            return_char_alignments=False,
-        )
     except AutoSyncError:
         raise
     except Exception as exc:  # noqa: BLE001
         raise AutoSyncError(f"Ошибка WhisperX word alignment: {exc}") from exc
 
-    words_raw, segments_raw = _extract_words_and_segments(aligned)
-    recognized_words: list[RecognizedWord] = build_recognized_words(words_raw, russian_mode=russian_mode)
     segment_infos = [SegmentInfo(start=s.get("start"), end=s.get("end"), text=str(s.get("text") or "")) for s in segments_raw]
 
     if len(recognized_words) < 2:
         raise AutoSyncError("WhisperX вернул слишком мало слов с таймингом")
+
+    logger.debug(
+        "WhisperX/raw_segments: %s",
+        json.dumps(segments_raw, ensure_ascii=False),
+    )
+    logger.debug(
+        "WhisperX/raw_words: %s",
+        json.dumps(
+            [
+                {
+                    "idx": word.index,
+                    "raw": word.raw,
+                    "normalized": word.normalized,
+                    "start": word.start,
+                    "end": word.end,
+                    "confidence": word.confidence,
+                }
+                for word in recognized_words
+            ],
+            ensure_ascii=False,
+        ),
+    )
 
     cfg = LineAlignmentConfig(russian_mode=russian_mode)
     line_results = align_lyric_lines(lines, recognized_words, segments=segment_infos, config=cfg)
@@ -219,6 +369,26 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
     logger.debug(
         "Автосинхронизация/whisperx: statuses=%s",
         json.dumps([item.status for item in line_results], ensure_ascii=False),
+    )
+    logger.debug(
+        "Автосинхронизация/heuristic_result: %s",
+        json.dumps(
+            [
+                {
+                    "line_idx": idx,
+                    "text": item.text,
+                    "start_time_seconds": round(float(item.start_time_seconds), 4),
+                    "raw_start_seconds": None if item.raw_start_seconds is None else round(float(item.raw_start_seconds), 4),
+                    "confidence": round(float(item.confidence), 4),
+                    "status": item.status,
+                    "anchor_word": item.anchor_word,
+                    "anchor_word_index": item.anchor_word_index,
+                    "details": item.details,
+                }
+                for idx, item in enumerate(line_results)
+            ],
+            ensure_ascii=False,
+        ),
     )
     return lyrics
 

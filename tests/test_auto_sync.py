@@ -7,11 +7,20 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.auto_sync import AutoSyncError, _split_lyrics_text, auto_sync_lyrics
+from core.auto_sync import (
+    AutoSyncError,
+    _alignment_material_is_too_sparse,
+    _should_prefer_retry_source,
+    _split_lyrics_text,
+    _transcription_coverage_is_too_low,
+    _whisperx_alignment_quality_is_poor,
+    auto_sync_lyrics,
+)
 from models import LyricLine
 import core.line_alignment as line_alignment
 from core.line_alignment import (
     LineAlignmentConfig,
+    LineTimingResult,
     RecognizedWord,
     SegmentInfo,
     _find_segment_fallback_start,
@@ -109,6 +118,75 @@ def test_extract_words_and_segments_handles_missing_fields() -> None:
     assert words[0]["word"] == "Hello"
     assert words[1]["word"] == "world"
     assert segments[1]["text"] == ""
+
+
+def test_transcription_coverage_is_too_low_for_short_coverage() -> None:
+    transcription = {
+        "segments": [
+            {"start": 0.5, "end": 15.0, "words": [{"word": "hello"}, {"word": "world"}]},
+        ]
+    }
+    assert _transcription_coverage_is_too_low(
+        transcription=transcription,
+        audio_duration_s=120.0,
+        lyric_line_count=20,
+    )
+
+
+def test_transcription_coverage_is_acceptable_for_full_timeline() -> None:
+    words = [{"word": f"w{idx}"} for idx in range(60)]
+    transcription = {
+        "segments": [
+            {"start": 0.3, "end": 96.0, "words": words[:30]},
+            {"start": 96.3, "end": 118.0, "words": words[30:]},
+        ]
+    }
+    assert not _transcription_coverage_is_too_low(
+        transcription=transcription,
+        audio_duration_s=120.0,
+        lyric_line_count=20,
+    )
+
+
+def test_alignment_material_is_too_sparse_threshold() -> None:
+    assert _alignment_material_is_too_sparse(recognized_word_count=120, lyric_line_count=58)
+    assert not _alignment_material_is_too_sparse(recognized_word_count=190, lyric_line_count=58)
+
+
+def test_should_prefer_retry_source_requires_meaningful_gain() -> None:
+    assert not _should_prefer_retry_source(current_word_count=168, retry_word_count=175)
+    assert _should_prefer_retry_source(current_word_count=168, retry_word_count=210)
+
+
+def test_whisperx_alignment_quality_is_poor_when_timeline_coverage_is_short() -> None:
+    line_results = [
+        LineTimingResult(text="line1", start_time_seconds=12.6, confidence=0.9, status="matched_global"),
+        LineTimingResult(text="line2", start_time_seconds=13.1, confidence=0.1, status="fallback_gap"),
+        LineTimingResult(text="line3", start_time_seconds=96.0, confidence=0.8, status="matched_global"),
+    ]
+    poor, reason = _whisperx_alignment_quality_is_poor(
+        line_results=line_results,
+        track_duration_s=178.36,
+        recognized_word_count=168,
+    )
+    assert poor
+    assert "low_timeline_coverage" in reason
+
+
+def test_whisperx_alignment_quality_accepts_reasonable_coverage() -> None:
+    line_results = [
+        LineTimingResult(text="line1", start_time_seconds=10.0, confidence=0.9, status="matched_global"),
+        LineTimingResult(text="line2", start_time_seconds=60.0, confidence=0.9, status="matched_global"),
+        LineTimingResult(text="line3", start_time_seconds=150.0, confidence=0.9, status="matched_global"),
+        LineTimingResult(text="line4", start_time_seconds=165.0, confidence=0.2, status="fallback_gap"),
+    ]
+    poor, reason = _whisperx_alignment_quality_is_poor(
+        line_results=line_results,
+        track_duration_s=178.36,
+        recognized_word_count=260,
+    )
+    assert not poor
+    assert reason == ""
 
 
 def test_get_missing_autosync_packages_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -503,6 +581,45 @@ def test_align_lyric_lines_global_rejects_late_local_match_when_previous_line_is
     assert result[1].details["recognized_jump_words"] >= 1
 
 
+def test_is_global_match_reliable_rejects_implausibly_small_adjacent_gap() -> None:
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=12.63, end=12.75, confidence=0.99, index=0),
+        RecognizedWord(raw="beta", normalized="beta", start=12.80, end=12.90, confidence=0.99, index=1),
+        RecognizedWord(raw="gamma", normalized="gamma", start=12.95, end=13.05, confidence=0.99, index=2),
+        RecognizedWord(raw="delta", normalized="delta", start=12.75, end=12.85, confidence=0.99, index=3),
+        RecognizedWord(raw="echo", normalized="echo", start=12.87, end=12.95, confidence=0.99, index=4),
+        RecognizedWord(raw="foxtrot", normalized="foxtrot", start=12.99, end=13.10, confidence=0.99, index=5),
+    ]
+    matched = [
+        line_alignment._TokenMatch(token_idx_in_line=0, recognized_idx=3),
+        line_alignment._TokenMatch(token_idx_in_line=1, recognized_idx=4),
+        line_alignment._TokenMatch(token_idx_in_line=2, recognized_idx=5),
+    ]
+
+    reliable, details = line_alignment._is_global_match_reliable(
+        line_idx=1,
+        line_count=40,
+        line_tokens=["delta", "echo", "foxtrot"],
+        matched=matched,
+        recognized_words=recognized,
+        raw_start_seconds=12.75,
+        confidence=1.0,
+        prev_reliable_line_idx=0,
+        prev_reliable_token_count=4,
+        prev_reliable_raw_start_seconds=12.63,
+        prev_reliable_anchor_idx=2,
+        last_used_recognized_idx=2,
+        first_word_time=12.63,
+        last_word_time=170.0,
+        cfg=LineAlignmentConfig(use_global_alignment=True),
+        segments=[],
+    )
+
+    assert not reliable
+    assert details["rejected_reason"] == "gap_from_prev_line_too_small"
+    assert details["gap_from_prev_line_s"] == pytest.approx(0.12, abs=0.001)
+
+
 def test_align_lyric_lines_global_refines_suspicious_anchor_block_instead_of_locking_tail() -> None:
     lyric_lines = [f"line{idx} aa bb" for idx in range(20)]
     recognized: list[RecognizedWord] = []
@@ -548,6 +665,90 @@ def test_align_lyric_lines_global_refines_suspicious_anchor_block_instead_of_loc
     assert result[18].details["refined_from_block"] == "17:18"
     assert result[18].details["suspicious_gap_s"] > 2.0
     assert result[19].raw_start_seconds > 24.0
+
+
+def test_align_lyric_lines_global_uses_local_recovery_for_unresolved_strong_line() -> None:
+    lyric_lines = [
+        "alpha start now",
+        "beta gamma delta",
+    ]
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=0.5, end=0.7, confidence=0.99, index=0),
+        RecognizedWord(raw="start", normalized="start", start=0.8, end=1.0, confidence=0.99, index=1),
+        RecognizedWord(raw="now", normalized="now", start=1.1, end=1.3, confidence=0.99, index=2),
+        RecognizedWord(raw="noise", normalized="noise", start=3.0, end=3.1, confidence=0.99, index=3),
+        RecognizedWord(raw="beta", normalized="beta", start=7.0, end=7.2, confidence=0.99, index=4),
+        RecognizedWord(raw="gamma", normalized="gamma", start=7.3, end=7.5, confidence=0.99, index=5),
+        RecognizedWord(raw="delta", normalized="delta", start=7.6, end=7.8, confidence=0.99, index=6),
+    ]
+
+    def fake_global_align_tokens(*_args, **_kwargs):
+        return {
+            0: [
+                    line_alignment._TokenMatch(token_idx_in_line=0, recognized_idx=0),
+                    line_alignment._TokenMatch(token_idx_in_line=1, recognized_idx=1),
+                    line_alignment._TokenMatch(token_idx_in_line=2, recognized_idx=2),
+                ],
+            }
+
+    original_global_align = line_alignment._global_align_tokens
+    try:
+        line_alignment._global_align_tokens = fake_global_align_tokens
+        result = align_lyric_lines(
+            lyric_lines,
+            recognized,
+            config=LineAlignmentConfig(use_global_alignment=True),
+        )
+    finally:
+        line_alignment._global_align_tokens = original_global_align
+
+    assert result[0].status == "matched_global"
+    assert result[1].status == "matched_local_recovery"
+    assert result[1].raw_start_seconds == pytest.approx(7.0, abs=0.01)
+    assert result[1].anchor_word == "beta"
+
+
+def test_align_lyric_lines_greedy_keeps_searching_after_weak_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    lyric_lines = ["alpha beta", "gamma delta"]
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=10.0, end=10.1, confidence=0.99, index=0),
+        RecognizedWord(raw="beta", normalized="beta", start=10.2, end=10.3, confidence=0.99, index=1),
+        RecognizedWord(raw="gamma", normalized="gamma", start=12.0, end=12.1, confidence=0.99, index=2),
+        RecognizedWord(raw="delta", normalized="delta", start=12.2, end=12.3, confidence=0.99, index=3),
+    ]
+
+    windows = [
+        line_alignment._SearchWindow(level="local", start_idx=0, end_idx=1, span_seconds=1.0, material_state="test"),
+        line_alignment._SearchWindow(level="medium", start_idx=0, end_idx=2, span_seconds=2.0, material_state="test"),
+        line_alignment._SearchWindow(level="wide", start_idx=0, end_idx=3, span_seconds=4.0, material_state="test"),
+    ]
+
+    weak_matches = [line_alignment._TokenMatch(token_idx_in_line=0, recognized_idx=1)]
+    strong_matches = [
+        line_alignment._TokenMatch(token_idx_in_line=0, recognized_idx=2),
+        line_alignment._TokenMatch(token_idx_in_line=1, recognized_idx=3),
+    ]
+
+    def fake_windows(**_kwargs):
+        return windows
+
+    def fake_evaluate(_tokens, _recognized_words, window, **_kwargs):
+        if window.level == "wide":
+            return ([(0.91, 2, strong_matches, None)], "matched")
+        return ([(0.33, 1, weak_matches, None)], "weak_score")
+
+    monkeypatch.setattr(line_alignment, "_build_candidate_windows", fake_windows)
+    monkeypatch.setattr(line_alignment, "_evaluate_window_candidates", fake_evaluate)
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=False),
+    )
+
+    assert result[1].status.startswith("matched")
+    assert result[1].raw_start_seconds == pytest.approx(12.0, abs=0.01)
+    assert result[1].details["window_level"] == "wide"
 
 
 def test_align_lyric_lines_segment_prior_rejects_far_future_match() -> None:

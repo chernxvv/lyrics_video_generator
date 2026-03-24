@@ -100,6 +100,9 @@ class LineAlignmentConfig:
     global_hard_line_time_factor: float = 3.6
     global_hard_line_word_factor: float = 4.5
     global_constraint_penalty: float = 7.5
+    global_min_adjacent_gap_ratio: float = 0.18
+    global_min_adjacent_gap_floor_s: float = 0.35
+    global_small_gap_strict_token_threshold: int = 3
     segment_expected_match_bonus: float = 0.32
     segment_jump_penalty: float = 0.58
     segment_far_penalty: float = 1.35
@@ -762,6 +765,7 @@ def _is_segment_fallback_plausible(
     *,
     candidate_start: float,
     prev_start: float | None,
+    prev_line_idx: int,
     line_idx: int,
     total_lines: int,
     first_word_time: float,
@@ -772,12 +776,13 @@ def _is_segment_fallback_plausible(
     if prev_start is None:
         return True
 
+    line_delta = max(1, line_idx - max(0, prev_line_idx))
     expected_current = _estimate_expected_time(line_idx, total_lines, first_word_time, last_word_time)
     expected_previous = _estimate_expected_time(max(0, line_idx - 1), total_lines, first_word_time, last_word_time)
     expected_gap_s = max(min_gap_s, expected_current - expected_previous)
     allowed_gap_s = max(
-        cfg.max_line_jump_ms / 1000.0,
-        expected_gap_s * max(1.0, cfg.global_soft_line_time_factor),
+        (cfg.max_line_jump_ms / 1000.0) * line_delta,
+        expected_gap_s * max(1.0, cfg.global_soft_line_time_factor) * line_delta,
     )
     return (candidate_start - prev_start) <= allowed_gap_s
 
@@ -909,6 +914,7 @@ def _is_global_match_reliable(
     raw_start_seconds: float | None,
     confidence: float,
     prev_reliable_line_idx: int,
+    prev_reliable_token_count: int,
     prev_reliable_raw_start_seconds: float | None,
     prev_reliable_anchor_idx: int,
     last_used_recognized_idx: int,
@@ -987,6 +993,16 @@ def _is_global_match_reliable(
         if line_delta == 1 and gap_from_prev > adjacent_gap_limit:
             details["rejected_reason"] = "gap_from_prev_line_too_large"
             return False, details
+        strict_token_floor = max(1, int(cfg.global_small_gap_strict_token_threshold))
+        if line_delta == 1 and prev_reliable_token_count >= strict_token_floor and len(line_tokens) >= strict_token_floor:
+            adjacent_gap_floor = max(
+                float(cfg.global_min_adjacent_gap_floor_s),
+                expected_gap_s * float(cfg.global_min_adjacent_gap_ratio),
+                max(0.0, float(cfg.min_line_gap_ms)) / 1000.0 * 2.0,
+            )
+            if gap_from_prev < adjacent_gap_floor:
+                details["rejected_reason"] = "gap_from_prev_line_too_small"
+                return False, details
         if line_delta == 1 and recognized_jump_words > adjacent_word_limit:
             details["rejected_reason"] = "recognized_jump_too_large"
             return False, details
@@ -1422,12 +1438,7 @@ def _align_lyric_lines_greedy(
         window_state = "no_windows"
         search_span_words = 0
         search_span_seconds = 0.0
-        weak_window_seen = False
-
         for window in search_windows:
-            if window.level in {"wide", "global"} and weak_window_seen and len(lyric_lines) > 1:
-                window_state = "blocked_by_weak_intermediate"
-                break
             window_candidates, candidate_state = _evaluate_window_candidates(
                 tokens,
                 recognized_words,
@@ -1443,7 +1454,6 @@ def _align_lyric_lines_greedy(
                 prev_confirmed_segment_idx=prev_confirmed_segment_idx,
             )
             if candidate_state == "weak_score":
-                weak_window_seen = True
                 if window_candidates and not weak_top_candidates:
                     weak_top_candidates = window_candidates
             if candidate_state == "matched":
@@ -1685,6 +1695,7 @@ def _align_lyric_lines_global(
     interpolated_low_info_lines = 0
     global_rejection_count = 0
     prev_reliable_line_idx = -1
+    prev_reliable_token_count = 0
     prev_reliable_raw_start: float | None = None
     prev_reliable_anchor_idx = -1
     last_used_recognized_idx = -1
@@ -1710,6 +1721,7 @@ def _align_lyric_lines_global(
                 raw_start_seconds=start,
                 confidence=confidence,
                 prev_reliable_line_idx=prev_reliable_line_idx,
+                prev_reliable_token_count=prev_reliable_token_count,
                 prev_reliable_raw_start_seconds=prev_reliable_raw_start,
                 prev_reliable_anchor_idx=prev_reliable_anchor_idx,
                 last_used_recognized_idx=last_used_recognized_idx,
@@ -1727,6 +1739,7 @@ def _align_lyric_lines_global(
                 anchor_indices[i] = idx
                 anchored_strong_lines += 1
                 prev_reliable_line_idx = i
+                prev_reliable_token_count = len(line_tokens[i])
                 prev_reliable_raw_start = float(start)
                 prev_reliable_anchor_idx = idx
                 last_used_recognized_idx = max(last_used_recognized_idx, max(match.recognized_idx for match in matched))
@@ -1776,6 +1789,34 @@ def _align_lyric_lines_global(
         )
         if diagnostic_candidates:
             diagnostic = diagnostic_candidates[0]
+            line_delta = max(1, i - prev_line_idx) if prev_line_idx >= 0 else 1
+            max_recovery_gap_s = max(
+                float(cfg.max_line_jump_ms) / 1000.0,
+                (float(cfg.max_line_jump_ms) / 1000.0) * line_delta,
+            )
+            recovery_gap_s = (
+                None
+                if prev is None or diagnostic.raw_start_seconds is None
+                else max(0.0, float(diagnostic.raw_start_seconds) - float(prev))
+            )
+            if (
+                diagnostic.raw_start_seconds is not None
+                and diagnostic.anchor_idx >= 0
+                and diagnostic.confidence >= max(0.45, cfg.min_local_match_score * 0.85)
+                and diagnostic.score >= (cfg.min_local_match_score * 0.75)
+                and (prev is None or diagnostic.raw_start_seconds >= (float(prev) + min_gap_s))
+                and (recovery_gap_s is None or recovery_gap_s <= max_recovery_gap_s)
+            ):
+                raw_starts[i] = float(diagnostic.raw_start_seconds)
+                confidences[i] = max(confidences[i], float(diagnostic.confidence))
+                statuses[i] = "matched_local_recovery"
+                anchor_indices[i] = diagnostic.anchor_idx
+                anchor_words[i] = diagnostic.anchor_word
+                line_details[i]["local_recovery_score"] = round(float(diagnostic.score), 4)
+                line_details[i]["local_recovery_confidence"] = round(float(diagnostic.confidence), 4)
+                line_details[i]["local_recovery_anchor_idx"] = diagnostic.anchor_idx
+                line_details[i]["local_recovery_anchor_word"] = diagnostic.anchor_word
+                continue
             diagnostic_prior = _estimate_segment_prior(
                 segments=segments,
                 matched_time=diagnostic.raw_start_seconds,
@@ -1806,6 +1847,7 @@ def _align_lyric_lines_global(
             if seg_start is not None and _is_segment_fallback_plausible(
                 candidate_start=seg_start,
                 prev_start=prev,
+                prev_line_idx=prev_line_idx,
                 line_idx=i,
                 total_lines=len(lyric_lines),
                 first_word_time=first_word_time,
