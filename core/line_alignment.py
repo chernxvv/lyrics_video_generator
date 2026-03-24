@@ -1371,68 +1371,6 @@ def _resolve_timing_conflicts(
     return relocated, results
 
 
-def _bridge_unresolved_strong_blocks(
-    *,
-    raw_starts: list[float | None],
-    statuses: list[str],
-    strong_mask: list[bool],
-    line_tokens: list[list[str]],
-    min_gap_s: float,
-) -> int:
-    bridged = 0
-    if not raw_starts:
-        return bridged
-
-    idx = 0
-    total = len(raw_starts)
-    while idx < total:
-        if not strong_mask[idx] or not str(statuses[idx]).startswith("fallback"):
-            idx += 1
-            continue
-
-        block_start = idx
-        while idx < total and strong_mask[idx] and str(statuses[idx]).startswith("fallback"):
-            idx += 1
-        block_end = idx - 1
-
-        prev_strong = max(
-            (j for j in range(block_start - 1, -1, -1) if strong_mask[j] and raw_starts[j] is not None),
-            default=None,
-        )
-        next_strong = min(
-            (j for j in range(block_end + 1, total) if strong_mask[j] and raw_starts[j] is not None),
-            default=None,
-        )
-        if prev_strong is None or next_strong is None:
-            continue
-
-        left = float(raw_starts[prev_strong])
-        right = float(raw_starts[next_strong])
-        block_len = block_end - block_start + 1
-        if right - left <= min_gap_s * (block_len + 1):
-            continue
-
-        weights: list[float] = []
-        for j in range(block_start, block_end + 1):
-            token_count = len(line_tokens[j])
-            weights.append(max(1.0, token_count / 2.0))
-        total_weight = sum(weights)
-        if total_weight <= 0:
-            continue
-
-        span = max(min_gap_s * (block_len + 1), right - left)
-        cursor = left
-        for offset, j in enumerate(range(block_start, block_end + 1)):
-            share = span * (weights[offset] / total_weight)
-            cursor = min(right - (min_gap_s * (block_end - j + 1)), cursor + share)
-            bridged_time = max(left + min_gap_s * (offset + 1), cursor)
-            raw_starts[j] = bridged_time
-            statuses[j] = f"{statuses[j]}_bridged"
-            bridged += 1
-
-    return bridged
-
-
 def _align_lyric_lines_greedy(
     lyric_lines: list[str],
     recognized_words: list[RecognizedWord],
@@ -1925,16 +1863,7 @@ def _align_lyric_lines_global(
         raw_starts[i] = (prev + min_gap_s) if prev is not None else 0.0
         statuses[i] = "fallback_gap"
 
-    # Phase B: bridge unresolved strong blocks between reliable strong anchors.
-    bridged_strong_fallback_lines = _bridge_unresolved_strong_blocks(
-        raw_starts=raw_starts,
-        statuses=statuses,
-        strong_mask=strong_mask,
-        line_tokens=line_tokens,
-        min_gap_s=min_gap_s,
-    )
-
-    # Phase C: interpolate low-information lines between strong anchors
+    # Phase B: interpolate low-information lines between strong anchors
     strong_indices = [idx for idx, is_strong in enumerate(strong_mask) if is_strong]
     for i in range(len(lyric_lines)):
         if strong_mask[i]:
@@ -1991,7 +1920,6 @@ def _align_lyric_lines_global(
         "interpolated_low_info_lines": interpolated_low_info_lines,
         "global_rejection_count": global_rejection_count,
         "refined_block_count": refined_block_count,
-        "bridged_strong_fallback_lines": bridged_strong_fallback_lines,
     }
     return results, strong_mask, stats
 
