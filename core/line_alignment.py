@@ -17,6 +17,7 @@ import logging
 import re
 import time
 import unicodedata
+from difflib import SequenceMatcher
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -753,8 +754,14 @@ def build_recognized_words(words: list[dict], *, russian_mode: bool = False) -> 
 def _find_segment_fallback_start(segments: list[SegmentInfo], prev_start: float, min_gap_s: float) -> float | None:
     target = prev_start + min_gap_s
     for seg in segments:
-        if seg.start is not None and seg.start >= target:
-            return float(seg.start)
+        seg_start = float(seg.start) if seg.start is not None else None
+        seg_end = float(seg.end) if seg.end is not None else None
+        if seg_start is None:
+            continue
+        if seg_start <= target and seg_end is not None and target <= seg_end:
+            return target
+        if seg_start >= target:
+            return seg_start
     return None
 
 
@@ -768,6 +775,7 @@ def _is_segment_fallback_plausible(
     last_word_time: float,
     cfg: LineAlignmentConfig,
     min_gap_s: float,
+    prev_line_idx: int,
 ) -> bool:
     if prev_start is None:
         return True
@@ -775,11 +783,51 @@ def _is_segment_fallback_plausible(
     expected_current = _estimate_expected_time(line_idx, total_lines, first_word_time, last_word_time)
     expected_previous = _estimate_expected_time(max(0, line_idx - 1), total_lines, first_word_time, last_word_time)
     expected_gap_s = max(min_gap_s, expected_current - expected_previous)
+    line_delta = max(1, line_idx - prev_line_idx) if prev_line_idx >= 0 else 1
     allowed_gap_s = max(
         cfg.max_line_jump_ms / 1000.0,
-        expected_gap_s * max(1.0, cfg.global_soft_line_time_factor),
+        expected_gap_s * max(1.0, cfg.global_soft_line_time_factor) * float(line_delta),
     )
     return (candidate_start - prev_start) <= allowed_gap_s
+
+
+def _fallback_step_seconds_for_line(
+    *,
+    line_idx: int,
+    total_lines: int,
+    first_word_time: float,
+    last_word_time: float,
+    min_gap_s: float,
+) -> float:
+    expected_current = _estimate_expected_time(line_idx, total_lines, first_word_time, last_word_time)
+    expected_previous = _estimate_expected_time(max(0, line_idx - 1), total_lines, first_word_time, last_word_time)
+    expected_gap_s = max(min_gap_s, expected_current - expected_previous)
+    return max(min_gap_s, min(1.25, expected_gap_s * 0.5))
+
+
+def _find_segment_hint_fallback_start(
+    *,
+    segments: list[SegmentInfo],
+    hint_segment_idx: int,
+    prev_start: float | None,
+    step_s: float,
+) -> float | None:
+    if not segments:
+        return None
+    target = (prev_start + step_s) if prev_start is not None else None
+    for seg_idx in range(max(0, hint_segment_idx), len(segments)):
+        seg = segments[seg_idx]
+        seg_start = float(seg.start) if seg.start is not None else None
+        seg_end = float(seg.end) if seg.end is not None else None
+        if seg_start is None:
+            continue
+        if target is None:
+            return seg_start
+        if seg_end is not None and seg_start <= target <= seg_end:
+            return target
+        if target <= seg_start:
+            return seg_start
+    return None
 
 
 def _should_block_segment_fallback(
@@ -829,6 +877,66 @@ def _build_flat_text_tokens(lyric_lines: list[str], line_tokens: list[list[str]]
         for ti, tok in enumerate(line_tokens[li]):
             flat.append(_FlatTextToken(token=tok, line_idx=li, token_idx_in_line=ti))
     return flat
+
+
+def _normalized_text_for_similarity(text: str, *, russian_mode: bool) -> str:
+    tokens = tokenize_for_matching(text, russian_mode=russian_mode)
+    return " ".join(tokens)
+
+
+def _segment_overlap_score(line_tokens: list[str], segment_tokens: list[str]) -> float:
+    if not line_tokens or not segment_tokens:
+        return 0.0
+    line_set = set(line_tokens)
+    segment_set = set(segment_tokens)
+    overlap = len(line_set & segment_set)
+    return overlap / float(max(1, len(line_set)))
+
+
+def _build_monotonic_segment_hints(
+    lyric_lines: list[str],
+    line_tokens: list[list[str]],
+    strong_mask: list[bool],
+    segments: list[SegmentInfo],
+    *,
+    russian_mode: bool,
+) -> list[int | None]:
+    hints: list[int | None] = [None] * len(lyric_lines)
+    if not segments:
+        return hints
+
+    segment_norm = [_normalized_text_for_similarity(seg.text, russian_mode=russian_mode) for seg in segments]
+    segment_tokens = [tokenize_for_matching(seg.text, russian_mode=russian_mode) for seg in segments]
+    cursor = 0
+
+    for line_idx, line in enumerate(lyric_lines):
+        if not strong_mask[line_idx]:
+            continue
+        line_norm = _normalized_text_for_similarity(line, russian_mode=russian_mode)
+        if not line_norm:
+            continue
+
+        best_idx = None
+        best_score = 0.0
+        for seg_idx in range(cursor, len(segments)):
+            if not segment_norm[seg_idx]:
+                continue
+            char_ratio = SequenceMatcher(None, line_norm, segment_norm[seg_idx]).ratio()
+            overlap_ratio = _segment_overlap_score(line_tokens[line_idx], segment_tokens[seg_idx])
+            score = (char_ratio * 0.65) + (overlap_ratio * 0.35)
+            if score > best_score:
+                best_score = score
+                best_idx = seg_idx
+
+        if best_idx is None:
+            continue
+        if best_score < 0.34:
+            continue
+
+        hints[line_idx] = best_idx
+        cursor = best_idx
+
+    return hints
 
 
 def _estimate_word_step_seconds(
@@ -1680,6 +1788,13 @@ def _align_lyric_lines_global(
         }
         for i in range(len(lyric_lines))
     ]
+    segment_hints = _build_monotonic_segment_hints(
+        lyric_lines,
+        line_tokens,
+        strong_mask,
+        segments,
+        russian_mode=cfg.russian_mode,
+    )
 
     anchored_strong_lines = 0
     interpolated_low_info_lines = 0
@@ -1758,7 +1873,14 @@ def _align_lyric_lines_global(
         if not strong_mask[i] or raw_starts[i] is not None:
             continue
         prev = max((raw_starts[k] for k in range(i - 1, -1, -1) if raw_starts[k] is not None), default=None)
-        prev_line_idx = max((k for k in range(i - 1, -1, -1) if raw_starts[k] is not None and strong_mask[k]), default=-1)
+        prev_line_idx = max(
+            (
+                k
+                for k in range(i - 1, -1, -1)
+                if raw_starts[k] is not None and strong_mask[k] and statuses[k].startswith("matched")
+            ),
+            default=-1,
+        )
         prev_segment_idx = _time_to_segment_idx(segments, prev)
         diagnostic_prior: _SegmentPrior | None = None
         diagnostic_candidates = _build_local_block_candidates(
@@ -1801,12 +1923,34 @@ def _align_lyric_lines_global(
             prev_line_idx=prev_line_idx,
         ):
             allow_segment_fallback = False
+        fallback_step_s = _fallback_step_seconds_for_line(
+            line_idx=i,
+            total_lines=len(lyric_lines),
+            first_word_time=first_word_time,
+            last_word_time=last_word_time,
+            min_gap_s=min_gap_s,
+        )
         if allow_segment_fallback:
-            seg_start = _find_segment_fallback_start(segments, prev_start=(prev or -min_gap_s), min_gap_s=min_gap_s)
+            hinted_idx = segment_hints[i]
+            if hinted_idx is not None:
+                line_details[i]["hint_segment_idx"] = hinted_idx
+            seg_start = (
+                _find_segment_hint_fallback_start(
+                    segments=segments,
+                    hint_segment_idx=hinted_idx,
+                    prev_start=prev,
+                    step_s=fallback_step_s,
+                )
+                if hinted_idx is not None
+                else None
+            )
+            if seg_start is None:
+                seg_start = _find_segment_fallback_start(segments, prev_start=(prev or -fallback_step_s), min_gap_s=fallback_step_s)
             if seg_start is not None and _is_segment_fallback_plausible(
                 candidate_start=seg_start,
                 prev_start=prev,
                 line_idx=i,
+                prev_line_idx=prev_line_idx,
                 total_lines=len(lyric_lines),
                 first_word_time=first_word_time,
                 last_word_time=last_word_time,
@@ -1818,7 +1962,7 @@ def _align_lyric_lines_global(
                 continue
             if seg_start is not None:
                 line_details[i].setdefault("rejected_reason", "segment_fallback_too_far_ahead")
-        raw_starts[i] = (prev + min_gap_s) if prev is not None else 0.0
+        raw_starts[i] = (prev + fallback_step_s) if prev is not None else 0.0
         statuses[i] = "fallback_gap"
 
     # Phase B: interpolate low-information lines between strong anchors

@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
 from core.render import (
     RenderDependencyError,
     RenderError,
+    _build_filter_complex,
     _compute_uniform_scale,
     _ensure_ffmpeg_available,
     _escape_drawtext,
@@ -20,11 +21,14 @@ from core.render import (
     _supports_filter,
     _drawtext_style,
     _load_font,
+    _make_even,
     _measure_wrapped_height,
     _scale_box,
     _scale_value,
     _wrap_text_by_pixel_width,
 )
+from core.layout import compute_layout
+from models import ProjectData
 from models import RenderSettings
 
 
@@ -102,6 +106,19 @@ def test_escape_drawtext_escapes_special_characters() -> None:
 def test_scale_helpers_behaviour() -> None:
     assert _scale_value(10, 1.5) == 15
     assert _scale_box((1, 2, 10, 20), 2.0) == (2, 4, 20, 40)
+    assert _make_even(11) == 10
+    assert _make_even(12) == 12
+
+
+def test_build_filter_complex_uses_integer_center_crop_coordinates() -> None:
+    project = ProjectData(artist="artist", title="title", orientation="vertical")
+    layout = compute_layout(1080, 1920, "vertical")
+
+    filter_chain = _build_filter_complex(project, layout, use_cuda=False, scale_factor=2.0)
+
+    assert "crop=" in filter_chain
+    assert "floor((in_w-" in filter_chain
+    assert "floor((in_h-" in filter_chain
 
 
 def test_drawtext_style_requires_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

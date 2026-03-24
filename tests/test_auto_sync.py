@@ -14,6 +14,8 @@ from core.line_alignment import (
     LineAlignmentConfig,
     RecognizedWord,
     SegmentInfo,
+    _build_monotonic_segment_hints,
+    _fallback_step_seconds_for_line,
     _find_segment_fallback_start,
     align_lyric_lines,
 )
@@ -109,6 +111,21 @@ def test_extract_words_and_segments_handles_missing_fields() -> None:
     assert words[0]["word"] == "Hello"
     assert words[1]["word"] == "world"
     assert segments[1]["text"] == ""
+
+
+def test_configure_whisperx_runtime_disables_pyannote_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    from core.auto_sync import _configure_whisperx_runtime
+
+    monkeypatch.delenv("PYANNOTE_METRICS_ENABLED", raising=False)
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+
+    _configure_whisperx_runtime()
+
+    assert "PYANNOTE_METRICS_ENABLED" in os.environ
+    assert os.environ["PYANNOTE_METRICS_ENABLED"] == "0"
+    assert os.environ["HF_HUB_DISABLE_XET"] == "1"
 
 
 def test_get_missing_autosync_packages_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -659,10 +676,123 @@ def test_align_lyric_lines_global_does_not_promote_far_future_segment_fallback()
     assert result[2].raw_start_seconds >= result[1].raw_start_seconds
 
 
+def test_align_lyric_lines_global_allows_segment_fallback_for_far_unresolved_block() -> None:
+    lyric_lines = [
+        "opening anchor intro",
+        "line 1",
+        "line 2",
+        "line 3",
+        "line 4",
+        "line 5",
+        "line 6",
+        "line 7",
+        "line 8",
+        "line 9",
+        "line 10",
+        "final late bridge",
+    ]
+    recognized = [
+        RecognizedWord(raw="opening", normalized="opening", start=0.20, end=0.30, confidence=0.99, index=0),
+        RecognizedWord(raw="anchor", normalized="anchor", start=0.31, end=0.41, confidence=0.99, index=1),
+        RecognizedWord(raw="intro", normalized="intro", start=0.42, end=0.52, confidence=0.99, index=2),
+        RecognizedWord(raw="tail", normalized="tail", start=166.0, end=166.2, confidence=0.75, index=3),
+    ]
+    segments = [
+        SegmentInfo(start=0.20, end=0.60, text="opening anchor intro"),
+        SegmentInfo(start=110.0, end=110.8, text="late segment"),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        segments=segments,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[0].status == "matched_global"
+    late_fallback = next((item for item in result[1:] if item.status == "fallback_segment"), None)
+    assert late_fallback is not None
+    assert late_fallback.raw_start_seconds == pytest.approx(110.0, abs=0.01)
+    assert late_fallback.details.get("rejected_reason") != "segment_fallback_too_far_ahead"
+
+
+def test_align_lyric_lines_global_uses_last_matched_line_for_segment_fallback_distance() -> None:
+    lyric_lines = [
+        "opening anchor intro",
+        "missing middle phrase",
+        "second missing phrase",
+        "closing distant phrase",
+    ]
+    recognized = [
+        RecognizedWord(raw="opening", normalized="opening", start=0.20, end=0.30, confidence=0.99, index=0),
+        RecognizedWord(raw="anchor", normalized="anchor", start=0.31, end=0.41, confidence=0.99, index=1),
+        RecognizedWord(raw="intro", normalized="intro", start=0.42, end=0.52, confidence=0.99, index=2),
+        RecognizedWord(raw="tail", normalized="tail", start=100.0, end=100.2, confidence=0.7, index=3),
+    ]
+    segments = [
+        SegmentInfo(start=0.20, end=0.70, text="opening anchor intro"),
+        SegmentInfo(start=80.0, end=81.0, text="late fallback segment"),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        segments=segments,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[0].status == "matched_global"
+    assert result[1].status == "fallback_gap"
+    assert result[2].status == "fallback_segment"
+    assert result[2].raw_start_seconds == pytest.approx(80.0, abs=0.01)
+
+
 def test_find_segment_fallback_start_does_not_wrap_to_first_segment() -> None:
     segments = [SegmentInfo(start=3.0, end=4.0, text="seg")]
 
     assert _find_segment_fallback_start(segments, prev_start=10.0, min_gap_s=0.12) is None
+
+
+def test_find_segment_fallback_start_can_stay_inside_current_segment() -> None:
+    segments = [SegmentInfo(start=100.0, end=103.0, text="seg")]
+
+    assert _find_segment_fallback_start(segments, prev_start=101.0, min_gap_s=0.5) == pytest.approx(101.5, abs=1e-6)
+
+
+def test_fallback_step_seconds_for_line_is_adaptive_but_capped() -> None:
+    step = _fallback_step_seconds_for_line(
+        line_idx=40,
+        total_lines=58,
+        first_word_time=12.09,
+        last_word_time=166.424,
+        min_gap_s=0.12,
+    )
+
+    assert step == pytest.approx(1.25, abs=1e-6)
+
+
+def test_build_monotonic_segment_hints_prefers_monotonic_whisperx_alignment() -> None:
+    lyric_lines = [
+        "alpha opening line",
+        "beta middle phrase",
+        "gamma ending words",
+    ]
+    line_tokens = [line_alignment.tokenize_for_matching(line) for line in lyric_lines]
+    segments = [
+        SegmentInfo(start=0.0, end=1.0, text="alpha opening line"),
+        SegmentInfo(start=10.0, end=11.0, text="beta middle phrase"),
+        SegmentInfo(start=20.0, end=21.0, text="gamma ending words"),
+    ]
+
+    hints = _build_monotonic_segment_hints(
+        lyric_lines,
+        line_tokens,
+        [True, True, True],
+        segments,
+        russian_mode=False,
+    )
+
+    assert hints == [0, 1, 2]
 
 
 def test_align_lyric_lines_greedy_keeps_exact_later_match_over_overlap() -> None:
