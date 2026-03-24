@@ -13,12 +13,14 @@ from core.auto_sync import (
     _should_prefer_retry_source,
     _split_lyrics_text,
     _transcription_coverage_is_too_low,
+    _whisperx_alignment_quality_is_poor,
     auto_sync_lyrics,
 )
 from models import LyricLine
 import core.line_alignment as line_alignment
 from core.line_alignment import (
     LineAlignmentConfig,
+    LineTimingResult,
     RecognizedWord,
     SegmentInfo,
     _find_segment_fallback_start,
@@ -154,6 +156,37 @@ def test_alignment_material_is_too_sparse_threshold() -> None:
 def test_should_prefer_retry_source_requires_meaningful_gain() -> None:
     assert not _should_prefer_retry_source(current_word_count=168, retry_word_count=175)
     assert _should_prefer_retry_source(current_word_count=168, retry_word_count=210)
+
+
+def test_whisperx_alignment_quality_is_poor_when_timeline_coverage_is_short() -> None:
+    line_results = [
+        LineTimingResult(text="line1", start_time_seconds=12.6, confidence=0.9, status="matched_global"),
+        LineTimingResult(text="line2", start_time_seconds=13.1, confidence=0.1, status="fallback_gap"),
+        LineTimingResult(text="line3", start_time_seconds=96.0, confidence=0.8, status="matched_global"),
+    ]
+    poor, reason = _whisperx_alignment_quality_is_poor(
+        line_results=line_results,
+        track_duration_s=178.36,
+        recognized_word_count=168,
+    )
+    assert poor
+    assert "low_timeline_coverage" in reason
+
+
+def test_whisperx_alignment_quality_accepts_reasonable_coverage() -> None:
+    line_results = [
+        LineTimingResult(text="line1", start_time_seconds=10.0, confidence=0.9, status="matched_global"),
+        LineTimingResult(text="line2", start_time_seconds=60.0, confidence=0.9, status="matched_global"),
+        LineTimingResult(text="line3", start_time_seconds=150.0, confidence=0.9, status="matched_global"),
+        LineTimingResult(text="line4", start_time_seconds=165.0, confidence=0.2, status="fallback_gap"),
+    ]
+    poor, reason = _whisperx_alignment_quality_is_poor(
+        line_results=line_results,
+        track_duration_s=178.36,
+        recognized_word_count=260,
+    )
+    assert not poor
+    assert reason == ""
 
 
 def test_get_missing_autosync_packages_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -30,6 +30,7 @@ from core.line_alignment import (
     LineAlignmentConfig,
     RecognizedWord,
     SegmentInfo,
+    LineTimingResult,
     align_lyric_lines,
     build_recognized_words,
 )
@@ -146,6 +147,34 @@ def _should_prefer_retry_source(*, current_word_count: int, retry_word_count: in
     # Избегаем лишних переключений источника ради минимального прироста.
     min_delta = max(8, int(current_word_count * 0.15))
     return (retry_word_count - current_word_count) >= min_delta
+
+
+def _whisperx_alignment_quality_is_poor(
+    *,
+    line_results: list[LineTimingResult],
+    track_duration_s: float,
+    recognized_word_count: int,
+) -> tuple[bool, str]:
+    if not line_results:
+        return True, "empty_line_results"
+
+    total = len(line_results)
+    fallback_lines = sum(1 for item in line_results if item.status.startswith("fallback"))
+    matched_lines = [item for item in line_results if item.status.startswith("matched")]
+    fallback_ratio = fallback_lines / max(1, total)
+    latest_matched_start = max((item.start_time_seconds for item in matched_lines), default=0.0)
+    coverage_ratio = 0.0 if track_duration_s <= 0 else (latest_matched_start / max(1e-6, track_duration_s))
+    words_per_line = recognized_word_count / max(1, total)
+
+    if coverage_ratio < 0.62:
+        return True, f"low_timeline_coverage:{coverage_ratio:.3f}"
+    if fallback_ratio > 0.35 and coverage_ratio < 0.78:
+        return True, f"high_fallback_ratio:{fallback_ratio:.3f}"
+    if fallback_ratio > 0.42:
+        return True, f"too_many_fallbacks:{fallback_ratio:.3f}"
+    if words_per_line < 2.8 and coverage_ratio < 0.82:
+        return True, f"sparse_alignment_material:{words_per_line:.3f}"
+    return False, ""
 
 
 def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[LyricLine]:
@@ -300,6 +329,13 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
 
     cfg = LineAlignmentConfig(russian_mode=russian_mode)
     line_results = align_lyric_lines(lines, recognized_words, segments=segment_infos, config=cfg)
+    quality_is_poor, quality_reason = _whisperx_alignment_quality_is_poor(
+        line_results=line_results,
+        track_duration_s=duration,
+        recognized_word_count=len(recognized_words),
+    )
+    if quality_is_poor:
+        raise AutoSyncError(f"WhisperX alignment quality is too low ({quality_reason})")
 
     lyrics: list[LyricLine] = [
         LyricLine(start_time=_format_mmss(item.start_time_seconds), text=item.text)
