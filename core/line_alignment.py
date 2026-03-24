@@ -768,6 +768,7 @@ def _is_segment_fallback_plausible(
     last_word_time: float,
     cfg: LineAlignmentConfig,
     min_gap_s: float,
+    prev_line_idx: int,
 ) -> bool:
     if prev_start is None:
         return True
@@ -775,9 +776,10 @@ def _is_segment_fallback_plausible(
     expected_current = _estimate_expected_time(line_idx, total_lines, first_word_time, last_word_time)
     expected_previous = _estimate_expected_time(max(0, line_idx - 1), total_lines, first_word_time, last_word_time)
     expected_gap_s = max(min_gap_s, expected_current - expected_previous)
+    line_delta = max(1, line_idx - prev_line_idx) if prev_line_idx >= 0 else 1
     allowed_gap_s = max(
         cfg.max_line_jump_ms / 1000.0,
-        expected_gap_s * max(1.0, cfg.global_soft_line_time_factor),
+        expected_gap_s * max(1.0, cfg.global_soft_line_time_factor) * float(line_delta),
     )
     return (candidate_start - prev_start) <= allowed_gap_s
 
@@ -1807,6 +1809,7 @@ def _align_lyric_lines_global(
                 candidate_start=seg_start,
                 prev_start=prev,
                 line_idx=i,
+                prev_line_idx=prev_line_idx,
                 total_lines=len(lyric_lines),
                 first_word_time=first_word_time,
                 last_word_time=last_word_time,

@@ -659,6 +659,46 @@ def test_align_lyric_lines_global_does_not_promote_far_future_segment_fallback()
     assert result[2].raw_start_seconds >= result[1].raw_start_seconds
 
 
+def test_align_lyric_lines_global_allows_segment_fallback_for_far_unresolved_block() -> None:
+    lyric_lines = [
+        "opening anchor intro",
+        "line 1",
+        "line 2",
+        "line 3",
+        "line 4",
+        "line 5",
+        "line 6",
+        "line 7",
+        "line 8",
+        "line 9",
+        "line 10",
+        "final late bridge",
+    ]
+    recognized = [
+        RecognizedWord(raw="opening", normalized="opening", start=0.20, end=0.30, confidence=0.99, index=0),
+        RecognizedWord(raw="anchor", normalized="anchor", start=0.31, end=0.41, confidence=0.99, index=1),
+        RecognizedWord(raw="intro", normalized="intro", start=0.42, end=0.52, confidence=0.99, index=2),
+        RecognizedWord(raw="tail", normalized="tail", start=166.0, end=166.2, confidence=0.75, index=3),
+    ]
+    segments = [
+        SegmentInfo(start=0.20, end=0.60, text="opening anchor intro"),
+        SegmentInfo(start=110.0, end=110.8, text="late segment"),
+    ]
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        segments=segments,
+        config=LineAlignmentConfig(use_global_alignment=True),
+    )
+
+    assert result[0].status == "matched_global"
+    late_fallback = next((item for item in result[1:] if item.status == "fallback_segment"), None)
+    assert late_fallback is not None
+    assert late_fallback.raw_start_seconds == pytest.approx(110.0, abs=0.01)
+    assert late_fallback.details.get("rejected_reason") != "segment_fallback_too_far_ahead"
+
+
 def test_find_segment_fallback_start_does_not_wrap_to_first_segment() -> None:
     segments = [SegmentInfo(start=3.0, end=4.0, text="seg")]
 

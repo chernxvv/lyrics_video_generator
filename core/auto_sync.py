@@ -195,12 +195,63 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
     words_raw, segments_raw = _extract_words_and_segments(aligned)
     recognized_words: list[RecognizedWord] = build_recognized_words(words_raw, russian_mode=russian_mode)
     segment_infos = [SegmentInfo(start=s.get("start"), end=s.get("end"), text=str(s.get("text") or "")) for s in segments_raw]
+    logger.debug(
+        "WhisperX/raw_segments=%s",
+        json.dumps(
+            [
+                {
+                    "idx": idx,
+                    "start": seg.start,
+                    "end": seg.end,
+                    "text": seg.text,
+                }
+                for idx, seg in enumerate(segment_infos)
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    logger.debug(
+        "WhisperX/raw_words=%s",
+        json.dumps(
+            [
+                {
+                    "idx": word.index,
+                    "raw": word.raw,
+                    "normalized": word.normalized,
+                    "start": word.start,
+                    "end": word.end,
+                    "confidence": word.confidence,
+                }
+                for word in recognized_words
+            ],
+            ensure_ascii=False,
+        ),
+    )
 
     if len(recognized_words) < 2:
         raise AutoSyncError("WhisperX вернул слишком мало слов с таймингом")
 
     cfg = LineAlignmentConfig(russian_mode=russian_mode)
     line_results = align_lyric_lines(lines, recognized_words, segments=segment_infos, config=cfg)
+    logger.debug(
+        "Автосинхронизация/heuristic_result=%s",
+        json.dumps(
+            [
+                {
+                    "line_idx": idx,
+                    "text": item.text,
+                    "start_time_seconds": item.start_time_seconds,
+                    "raw_start_seconds": item.raw_start_seconds,
+                    "confidence": item.confidence,
+                    "status": item.status,
+                    "anchor": item.anchor_word,
+                    "details": item.details,
+                }
+                for idx, item in enumerate(line_results)
+            ],
+            ensure_ascii=False,
+        ),
+    )
 
     lyrics: list[LyricLine] = [
         LyricLine(start_time=_format_mmss(item.start_time_seconds), text=item.text)
