@@ -20,6 +20,7 @@ from core.render import (
     _supports_filter,
     _drawtext_style,
     _load_font,
+    _make_even,
     _measure_wrapped_height,
     _scale_box,
     _scale_value,
@@ -102,6 +103,8 @@ def test_escape_drawtext_escapes_special_characters() -> None:
 def test_scale_helpers_behaviour() -> None:
     assert _scale_value(10, 1.5) == 15
     assert _scale_box((1, 2, 10, 20), 2.0) == (2, 4, 20, 40)
+    assert _make_even(11) == 10
+    assert _make_even(12) == 12
 
 
 def test_drawtext_style_requires_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

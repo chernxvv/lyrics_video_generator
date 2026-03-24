@@ -169,6 +169,10 @@ def _scale_box(box: tuple[int, int, int, int], scale: float) -> tuple[int, int, 
     return (sx1, sy1, sx2, sy2)
 
 
+def _make_even(value: int) -> int:
+    return value if value % 2 == 0 else value - 1
+
+
 def _lyrics_spacing(scale_factor: float) -> tuple[int, int]:
     line_gap = _scale_value(8, scale_factor)
     block_gap = _scale_value(16, scale_factor)
@@ -357,10 +361,10 @@ def _render_chunk(
 
 def _build_filter_complex(project: ProjectData, layout, use_cuda: bool, scale_factor: float) -> str:
     scaled_cover_box = _scale_box(layout.cover_box, scale_factor)
-    cover_w = scaled_cover_box[2] - scaled_cover_box[0]
-    cover_h = scaled_cover_box[3] - scaled_cover_box[1]
-    cover_box_x = scaled_cover_box[0]
-    cover_box_y = scaled_cover_box[1]
+    cover_w = max(2, _make_even(scaled_cover_box[2] - scaled_cover_box[0]))
+    cover_h = max(2, _make_even(scaled_cover_box[3] - scaled_cover_box[1]))
+    cover_box_x = max(0, _make_even(scaled_cover_box[0]))
+    cover_box_y = max(0, _make_even(scaled_cover_box[1]))
 
     artist = _escape_drawtext(project.artist)
     title = _escape_drawtext(project.title)

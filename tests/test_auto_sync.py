@@ -14,6 +14,7 @@ from core.line_alignment import (
     LineAlignmentConfig,
     RecognizedWord,
     SegmentInfo,
+    _build_monotonic_segment_hints,
     _fallback_step_seconds_for_line,
     _find_segment_fallback_start,
     align_lyric_lines,
@@ -768,6 +769,30 @@ def test_fallback_step_seconds_for_line_is_adaptive_but_capped() -> None:
     )
 
     assert step == pytest.approx(1.25, abs=1e-6)
+
+
+def test_build_monotonic_segment_hints_prefers_monotonic_whisperx_alignment() -> None:
+    lyric_lines = [
+        "alpha opening line",
+        "beta middle phrase",
+        "gamma ending words",
+    ]
+    line_tokens = [line_alignment.tokenize_for_matching(line) for line in lyric_lines]
+    segments = [
+        SegmentInfo(start=0.0, end=1.0, text="alpha opening line"),
+        SegmentInfo(start=10.0, end=11.0, text="beta middle phrase"),
+        SegmentInfo(start=20.0, end=21.0, text="gamma ending words"),
+    ]
+
+    hints = _build_monotonic_segment_hints(
+        lyric_lines,
+        line_tokens,
+        [True, True, True],
+        segments,
+        russian_mode=False,
+    )
+
+    assert hints == [0, 1, 2]
 
 
 def test_align_lyric_lines_greedy_keeps_exact_later_match_over_overlap() -> None:
