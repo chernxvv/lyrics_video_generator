@@ -765,6 +765,7 @@ def _is_segment_fallback_plausible(
     *,
     candidate_start: float,
     prev_start: float | None,
+    prev_line_idx: int,
     line_idx: int,
     total_lines: int,
     first_word_time: float,
@@ -775,12 +776,13 @@ def _is_segment_fallback_plausible(
     if prev_start is None:
         return True
 
+    line_delta = max(1, line_idx - max(0, prev_line_idx))
     expected_current = _estimate_expected_time(line_idx, total_lines, first_word_time, last_word_time)
     expected_previous = _estimate_expected_time(max(0, line_idx - 1), total_lines, first_word_time, last_word_time)
     expected_gap_s = max(min_gap_s, expected_current - expected_previous)
     allowed_gap_s = max(
-        cfg.max_line_jump_ms / 1000.0,
-        expected_gap_s * max(1.0, cfg.global_soft_line_time_factor),
+        (cfg.max_line_jump_ms / 1000.0) * line_delta,
+        expected_gap_s * max(1.0, cfg.global_soft_line_time_factor) * line_delta,
     )
     return (candidate_start - prev_start) <= allowed_gap_s
 
@@ -1907,6 +1909,7 @@ def _align_lyric_lines_global(
             if seg_start is not None and _is_segment_fallback_plausible(
                 candidate_start=seg_start,
                 prev_start=prev,
+                prev_line_idx=prev_line_idx,
                 line_idx=i,
                 total_lines=len(lyric_lines),
                 first_word_time=first_word_time,
