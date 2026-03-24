@@ -327,15 +327,30 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
     if len(recognized_words) < 2:
         raise AutoSyncError("WhisperX вернул слишком мало слов с таймингом")
 
+    logger.debug(
+        "WhisperX/raw_segments: %s",
+        json.dumps(segments_raw, ensure_ascii=False),
+    )
+    logger.debug(
+        "WhisperX/raw_words: %s",
+        json.dumps(
+            [
+                {
+                    "idx": word.index,
+                    "raw": word.raw,
+                    "normalized": word.normalized,
+                    "start": word.start,
+                    "end": word.end,
+                    "confidence": word.confidence,
+                }
+                for word in recognized_words
+            ],
+            ensure_ascii=False,
+        ),
+    )
+
     cfg = LineAlignmentConfig(russian_mode=russian_mode)
     line_results = align_lyric_lines(lines, recognized_words, segments=segment_infos, config=cfg)
-    quality_is_poor, quality_reason = _whisperx_alignment_quality_is_poor(
-        line_results=line_results,
-        track_duration_s=duration,
-        recognized_word_count=len(recognized_words),
-    )
-    if quality_is_poor:
-        raise AutoSyncError(f"WhisperX alignment quality is too low ({quality_reason})")
 
     lyrics: list[LyricLine] = [
         LyricLine(start_time=_format_mmss(item.start_time_seconds), text=item.text)
@@ -354,6 +369,26 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
     logger.debug(
         "Автосинхронизация/whisperx: statuses=%s",
         json.dumps([item.status for item in line_results], ensure_ascii=False),
+    )
+    logger.debug(
+        "Автосинхронизация/heuristic_result: %s",
+        json.dumps(
+            [
+                {
+                    "line_idx": idx,
+                    "text": item.text,
+                    "start_time_seconds": round(float(item.start_time_seconds), 4),
+                    "raw_start_seconds": None if item.raw_start_seconds is None else round(float(item.raw_start_seconds), 4),
+                    "confidence": round(float(item.confidence), 4),
+                    "status": item.status,
+                    "anchor_word": item.anchor_word,
+                    "anchor_word_index": item.anchor_word_index,
+                    "details": item.details,
+                }
+                for idx, item in enumerate(line_results)
+            ],
+            ensure_ascii=False,
+        ),
     )
     return lyrics
 
