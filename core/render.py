@@ -376,13 +376,13 @@ def _build_filter_complex(project: ProjectData, layout, use_cuda: bool, scale_fa
         cover_chain = (
             f"[1:v]format=nv12,hwupload_cuda,"
             f"scale_cuda={cover_w}:{cover_h}:force_original_aspect_ratio=increase:format=nv12,"
-            f"hwdownload,format=nv12,crop={cover_w}:{cover_h}:(in_w-{cover_w})/2:(in_h-{cover_h})/2[cover]"
+            f"hwdownload,format=nv12,crop={cover_w}:{cover_h}:floor((in_w-{cover_w})/2):floor((in_h-{cover_h})/2)[cover]"
         )
     else:
         logger.info("Выбрана ветка filter_complex: CPU (scale/crop)")
         cover_chain = (
             f"[1:v]scale={cover_w}:{cover_h}:force_original_aspect_ratio=increase,"
-            f"crop={cover_w}:{cover_h}:(in_w-{cover_w})/2:(in_h-{cover_h})/2[cover]"
+            f"crop={cover_w}:{cover_h}:floor((in_w-{cover_w})/2):floor((in_h-{cover_h})/2)[cover]"
         )
 
     if project.orientation == "horizontal":
