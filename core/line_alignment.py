@@ -1760,7 +1760,14 @@ def _align_lyric_lines_global(
         if not strong_mask[i] or raw_starts[i] is not None:
             continue
         prev = max((raw_starts[k] for k in range(i - 1, -1, -1) if raw_starts[k] is not None), default=None)
-        prev_line_idx = max((k for k in range(i - 1, -1, -1) if raw_starts[k] is not None and strong_mask[k]), default=-1)
+        prev_line_idx = max(
+            (
+                k
+                for k in range(i - 1, -1, -1)
+                if raw_starts[k] is not None and strong_mask[k] and statuses[k].startswith("matched")
+            ),
+            default=-1,
+        )
         prev_segment_idx = _time_to_segment_idx(segments, prev)
         diagnostic_prior: _SegmentPrior | None = None
         diagnostic_candidates = _build_local_block_candidates(
