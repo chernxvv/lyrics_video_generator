@@ -1422,12 +1422,7 @@ def _align_lyric_lines_greedy(
         window_state = "no_windows"
         search_span_words = 0
         search_span_seconds = 0.0
-        weak_window_seen = False
-
         for window in search_windows:
-            if window.level in {"wide", "global"} and weak_window_seen and len(lyric_lines) > 1:
-                window_state = "blocked_by_weak_intermediate"
-                break
             window_candidates, candidate_state = _evaluate_window_candidates(
                 tokens,
                 recognized_words,
@@ -1443,7 +1438,6 @@ def _align_lyric_lines_greedy(
                 prev_confirmed_segment_idx=prev_confirmed_segment_idx,
             )
             if candidate_state == "weak_score":
-                weak_window_seen = True
                 if window_candidates and not weak_top_candidates:
                     weak_top_candidates = window_candidates
             if candidate_state == "matched":

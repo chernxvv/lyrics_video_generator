@@ -550,6 +550,49 @@ def test_align_lyric_lines_global_refines_suspicious_anchor_block_instead_of_loc
     assert result[19].raw_start_seconds > 24.0
 
 
+def test_align_lyric_lines_greedy_keeps_searching_after_weak_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    lyric_lines = ["alpha beta", "gamma delta"]
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=10.0, end=10.1, confidence=0.99, index=0),
+        RecognizedWord(raw="beta", normalized="beta", start=10.2, end=10.3, confidence=0.99, index=1),
+        RecognizedWord(raw="gamma", normalized="gamma", start=12.0, end=12.1, confidence=0.99, index=2),
+        RecognizedWord(raw="delta", normalized="delta", start=12.2, end=12.3, confidence=0.99, index=3),
+    ]
+
+    windows = [
+        line_alignment._SearchWindow(level="local", start_idx=0, end_idx=1, span_seconds=1.0, material_state="test"),
+        line_alignment._SearchWindow(level="medium", start_idx=0, end_idx=2, span_seconds=2.0, material_state="test"),
+        line_alignment._SearchWindow(level="wide", start_idx=0, end_idx=3, span_seconds=4.0, material_state="test"),
+    ]
+
+    weak_matches = [line_alignment._TokenMatch(token_idx_in_line=0, recognized_idx=1)]
+    strong_matches = [
+        line_alignment._TokenMatch(token_idx_in_line=0, recognized_idx=2),
+        line_alignment._TokenMatch(token_idx_in_line=1, recognized_idx=3),
+    ]
+
+    def fake_windows(**_kwargs):
+        return windows
+
+    def fake_evaluate(_tokens, _recognized_words, window, **_kwargs):
+        if window.level == "wide":
+            return ([(0.91, 2, strong_matches, None)], "matched")
+        return ([(0.33, 1, weak_matches, None)], "weak_score")
+
+    monkeypatch.setattr(line_alignment, "_build_candidate_windows", fake_windows)
+    monkeypatch.setattr(line_alignment, "_evaluate_window_candidates", fake_evaluate)
+
+    result = align_lyric_lines(
+        lyric_lines,
+        recognized,
+        config=LineAlignmentConfig(use_global_alignment=False),
+    )
+
+    assert result[1].status.startswith("matched")
+    assert result[1].raw_start_seconds == pytest.approx(12.0, abs=0.01)
+    assert result[1].details["window_level"] == "wide"
+
+
 def test_align_lyric_lines_segment_prior_rejects_far_future_match() -> None:
     lyric_lines = [
         "alpha intro start",
