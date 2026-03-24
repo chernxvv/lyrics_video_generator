@@ -14,6 +14,7 @@ from core.line_alignment import (
     LineAlignmentConfig,
     RecognizedWord,
     SegmentInfo,
+    _fallback_step_seconds_for_line,
     _find_segment_fallback_start,
     align_lyric_lines,
 )
@@ -749,6 +750,24 @@ def test_find_segment_fallback_start_does_not_wrap_to_first_segment() -> None:
     segments = [SegmentInfo(start=3.0, end=4.0, text="seg")]
 
     assert _find_segment_fallback_start(segments, prev_start=10.0, min_gap_s=0.12) is None
+
+
+def test_find_segment_fallback_start_can_stay_inside_current_segment() -> None:
+    segments = [SegmentInfo(start=100.0, end=103.0, text="seg")]
+
+    assert _find_segment_fallback_start(segments, prev_start=101.0, min_gap_s=0.5) == pytest.approx(101.5, abs=1e-6)
+
+
+def test_fallback_step_seconds_for_line_is_adaptive_but_capped() -> None:
+    step = _fallback_step_seconds_for_line(
+        line_idx=40,
+        total_lines=58,
+        first_word_time=12.09,
+        last_word_time=166.424,
+        min_gap_s=0.12,
+    )
+
+    assert step == pytest.approx(1.25, abs=1e-6)
 
 
 def test_align_lyric_lines_greedy_keeps_exact_later_match_over_overlap() -> None:

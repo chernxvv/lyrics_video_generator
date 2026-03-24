@@ -753,8 +753,14 @@ def build_recognized_words(words: list[dict], *, russian_mode: bool = False) -> 
 def _find_segment_fallback_start(segments: list[SegmentInfo], prev_start: float, min_gap_s: float) -> float | None:
     target = prev_start + min_gap_s
     for seg in segments:
-        if seg.start is not None and seg.start >= target:
-            return float(seg.start)
+        seg_start = float(seg.start) if seg.start is not None else None
+        seg_end = float(seg.end) if seg.end is not None else None
+        if seg_start is None:
+            continue
+        if seg_start <= target and seg_end is not None and target <= seg_end:
+            return target
+        if seg_start >= target:
+            return seg_start
     return None
 
 
@@ -782,6 +788,20 @@ def _is_segment_fallback_plausible(
         expected_gap_s * max(1.0, cfg.global_soft_line_time_factor) * float(line_delta),
     )
     return (candidate_start - prev_start) <= allowed_gap_s
+
+
+def _fallback_step_seconds_for_line(
+    *,
+    line_idx: int,
+    total_lines: int,
+    first_word_time: float,
+    last_word_time: float,
+    min_gap_s: float,
+) -> float:
+    expected_current = _estimate_expected_time(line_idx, total_lines, first_word_time, last_word_time)
+    expected_previous = _estimate_expected_time(max(0, line_idx - 1), total_lines, first_word_time, last_word_time)
+    expected_gap_s = max(min_gap_s, expected_current - expected_previous)
+    return max(min_gap_s, min(1.25, expected_gap_s * 0.5))
 
 
 def _should_block_segment_fallback(
@@ -1810,8 +1830,15 @@ def _align_lyric_lines_global(
             prev_line_idx=prev_line_idx,
         ):
             allow_segment_fallback = False
+        fallback_step_s = _fallback_step_seconds_for_line(
+            line_idx=i,
+            total_lines=len(lyric_lines),
+            first_word_time=first_word_time,
+            last_word_time=last_word_time,
+            min_gap_s=min_gap_s,
+        )
         if allow_segment_fallback:
-            seg_start = _find_segment_fallback_start(segments, prev_start=(prev or -min_gap_s), min_gap_s=min_gap_s)
+            seg_start = _find_segment_fallback_start(segments, prev_start=(prev or -fallback_step_s), min_gap_s=fallback_step_s)
             if seg_start is not None and _is_segment_fallback_plausible(
                 candidate_start=seg_start,
                 prev_start=prev,
@@ -1828,7 +1855,7 @@ def _align_lyric_lines_global(
                 continue
             if seg_start is not None:
                 line_details[i].setdefault("rejected_reason", "segment_fallback_too_far_ahead")
-        raw_starts[i] = (prev + min_gap_s) if prev is not None else 0.0
+        raw_starts[i] = (prev + fallback_step_s) if prev is not None else 0.0
         statuses[i] = "fallback_gap"
 
     # Phase B: interpolate low-information lines between strong anchors
