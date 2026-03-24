@@ -111,6 +111,21 @@ def test_extract_words_and_segments_handles_missing_fields() -> None:
     assert segments[1]["text"] == ""
 
 
+def test_configure_whisperx_runtime_disables_pyannote_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    from core.auto_sync import _configure_whisperx_runtime
+
+    monkeypatch.delenv("PYANNOTE_METRICS_ENABLED", raising=False)
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+
+    _configure_whisperx_runtime()
+
+    assert "PYANNOTE_METRICS_ENABLED" in os.environ
+    assert os.environ["PYANNOTE_METRICS_ENABLED"] == "0"
+    assert os.environ["HF_HUB_DISABLE_XET"] == "1"
+
+
 def test_get_missing_autosync_packages_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     import builtins
     from core.auto_sync import get_missing_autosync_packages

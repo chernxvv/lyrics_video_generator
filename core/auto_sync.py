@@ -108,7 +108,17 @@ def _extract_words_and_segments(aligned_result: dict) -> tuple[list[dict], list[
     return words, segments
 
 
+def _configure_whisperx_runtime() -> None:
+    # Отключаем шумные/лишние telemetry-подключения pyannote (otel.pyannote.ai),
+    # чтобы не было фоновых сетевых попыток и задержек при завершении приложения.
+    os.environ["PYANNOTE_METRICS_ENABLED"] = "0"
+    # Убираем шумный warning от HuggingFace про Xet, если ускоритель не установлен.
+    # Это не влияет на корректность загрузки моделей, только на способ скачивания.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+
 def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[LyricLine]:
+    _configure_whisperx_runtime()
     try:
         import whisperx
     except ImportError as exc:
@@ -123,10 +133,6 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
 
     language_code = _guess_language_code(lines)
     russian_mode = language_code == "ru"
-
-    # Убираем шумный warning от HuggingFace про Xet, если ускоритель не установлен.
-    # Это не влияет на корректность загрузки моделей, только на способ скачивания.
-    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
     source_audio = audio_path
     source_type = "full_mix"
