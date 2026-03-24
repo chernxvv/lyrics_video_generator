@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
 from core.auto_sync import (
     AutoSyncError,
     _alignment_material_is_too_sparse,
+    _should_prefer_retry_source,
     _split_lyrics_text,
     _transcription_coverage_is_too_low,
     auto_sync_lyrics,
@@ -148,6 +149,11 @@ def test_transcription_coverage_is_acceptable_for_full_timeline() -> None:
 def test_alignment_material_is_too_sparse_threshold() -> None:
     assert _alignment_material_is_too_sparse(recognized_word_count=120, lyric_line_count=58)
     assert not _alignment_material_is_too_sparse(recognized_word_count=190, lyric_line_count=58)
+
+
+def test_should_prefer_retry_source_requires_meaningful_gain() -> None:
+    assert not _should_prefer_retry_source(current_word_count=168, retry_word_count=175)
+    assert _should_prefer_retry_source(current_word_count=168, retry_word_count=210)
 
 
 def test_get_missing_autosync_packages_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -140,6 +140,14 @@ def _alignment_material_is_too_sparse(*, recognized_word_count: int, lyric_line_
     return recognized_word_count < max(24, lyric_line_count * 3)
 
 
+def _should_prefer_retry_source(*, current_word_count: int, retry_word_count: int) -> bool:
+    if retry_word_count <= current_word_count:
+        return False
+    # Избегаем лишних переключений источника ради минимального прироста.
+    min_delta = max(8, int(current_word_count * 0.15))
+    return (retry_word_count - current_word_count) >= min_delta
+
+
 def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[LyricLine]:
     try:
         import whisperx
@@ -192,6 +200,8 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
                 category=UserWarning,
             )
 
+            align_model, metadata = whisperx.load_align_model(language_code=language_code, device=device)
+
             def transcribe_with_recovery(audio_file: str, *, label: str) -> tuple[dict, np.ndarray]:
                 loaded_audio = whisperx.load_audio(audio_file)
                 try:
@@ -236,47 +246,53 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
 
                 return local_transcription, loaded_audio
 
-            transcription, audio = transcribe_with_recovery(source_audio, label=source_type)
-            words_in_transcription = sum(len(seg.get("words") or []) for seg in (transcription.get("segments") or []))
-            sparse_material = _alignment_material_is_too_sparse(
-                recognized_word_count=words_in_transcription,
+            def align_for_source(audio_file: str, *, label: str) -> tuple[list[dict], list[dict]]:
+                local_transcription, loaded_audio = transcribe_with_recovery(audio_file, label=label)
+                local_segments = local_transcription.get("segments") or []
+                if not local_segments:
+                    return [], []
+                aligned_local = whisperx.align(
+                    local_segments,
+                    align_model,
+                    metadata,
+                    loaded_audio,
+                    device,
+                    return_char_alignments=False,
+                )
+                return _extract_words_and_segments(aligned_local)
+
+            words_raw, segments_raw = align_for_source(source_audio, label=source_type)
+            recognized_words = build_recognized_words(words_raw, russian_mode=russian_mode)
+
+            if source_type == "vocals_stem" and _alignment_material_is_too_sparse(
+                recognized_word_count=len(recognized_words),
                 lyric_line_count=len(lines),
-            )
-            if source_type == "vocals_stem" and sparse_material:
+            ):
                 logger.warning(
-                    "Автосинхронизация: слишком мало слов на vocals stem (words=%d, lines=%d), "
-                    "повторяем на full mix",
-                    words_in_transcription,
+                    "Автосинхронизация: слишком мало выровненных слов на vocals stem (words=%d, lines=%d), "
+                    "повторяем pipeline на full mix",
+                    len(recognized_words),
                     len(lines),
                 )
-                transcription_mix, audio_mix = transcribe_with_recovery(audio_path, label="full_mix")
-                words_mix = sum(len(seg.get("words") or []) for seg in (transcription_mix.get("segments") or []))
-                if words_mix > words_in_transcription:
+                words_mix_raw, segments_mix_raw = align_for_source(audio_path, label="full_mix")
+                recognized_words_mix = build_recognized_words(words_mix_raw, russian_mode=russian_mode)
+                if _should_prefer_retry_source(
+                    current_word_count=len(recognized_words),
+                    retry_word_count=len(recognized_words_mix),
+                ):
                     source_audio = audio_path
                     source_type = "full_mix_recovered"
-                    transcription = transcription_mix
-                    audio = audio_mix
+                    words_raw = words_mix_raw
+                    segments_raw = segments_mix_raw
+                    recognized_words = recognized_words_mix
 
-        segments = transcription.get("segments") or []
-        if not segments:
+        if not segments_raw:
             raise AutoSyncError("WhisperX не вернул сегменты транскрипции")
-
-        align_model, metadata = whisperx.load_align_model(language_code=language_code, device=device)
-        aligned = whisperx.align(
-            segments,
-            align_model,
-            metadata,
-            audio,
-            device,
-            return_char_alignments=False,
-        )
     except AutoSyncError:
         raise
     except Exception as exc:  # noqa: BLE001
         raise AutoSyncError(f"Ошибка WhisperX word alignment: {exc}") from exc
 
-    words_raw, segments_raw = _extract_words_and_segments(aligned)
-    recognized_words: list[RecognizedWord] = build_recognized_words(words_raw, russian_mode=russian_mode)
     segment_infos = [SegmentInfo(start=s.get("start"), end=s.get("end"), text=str(s.get("text") or "")) for s in segments_raw]
 
     if len(recognized_words) < 2:
