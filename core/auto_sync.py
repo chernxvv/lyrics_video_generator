@@ -136,6 +136,10 @@ def _transcription_coverage_is_too_low(
     return covered_ratio < 0.78 or word_count < min_expected_words
 
 
+def _alignment_material_is_too_sparse(*, recognized_word_count: int, lyric_line_count: int) -> bool:
+    return recognized_word_count < max(24, lyric_line_count * 3)
+
+
 def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[LyricLine]:
     try:
         import whisperx
@@ -188,46 +192,70 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
                 category=UserWarning,
             )
 
-            audio = whisperx.load_audio(source_audio)
-            try:
-                model = whisperx.load_model(
-                    "small",
-                    device,
-                    compute_type=compute_type,
-                    language=language_code,
-                    vad_method="silero",
-                )
-                used_vad = True
-            except TypeError:
-                # WhisperX старых версий может не поддерживать vad_method.
-                model = whisperx.load_model("small", device, compute_type=compute_type, language=language_code)
-                used_vad = False
-            transcription = model.transcribe(audio, batch_size=8)
+            def transcribe_with_recovery(audio_file: str, *, label: str) -> tuple[dict, np.ndarray]:
+                loaded_audio = whisperx.load_audio(audio_file)
+                try:
+                    model = whisperx.load_model(
+                        "small",
+                        device,
+                        compute_type=compute_type,
+                        language=language_code,
+                        vad_method="silero",
+                    )
+                    used_vad_local = True
+                except TypeError:
+                    model = whisperx.load_model("small", device, compute_type=compute_type, language=language_code)
+                    used_vad_local = False
+                local_transcription = model.transcribe(loaded_audio, batch_size=8)
 
-            if used_vad and _transcription_coverage_is_too_low(
-                transcription=transcription,
-                audio_duration_s=duration,
-                lyric_line_count=len(lines),
-            ):
-                logger.warning(
-                    "Автосинхронизация: низкое покрытие сегментов с VAD, повторяем транскрипцию без VAD "
-                    "(duration=%.2fs, segments=%d)",
-                    duration,
-                    len(transcription.get("segments") or []),
-                )
-                model_no_vad = whisperx.load_model(
-                    "small",
-                    device,
-                    compute_type=compute_type,
-                    language=language_code,
-                )
-                retry_transcription = model_no_vad.transcribe(audio, batch_size=8)
-                if not _transcription_coverage_is_too_low(
-                    transcription=retry_transcription,
+                if used_vad_local and _transcription_coverage_is_too_low(
+                    transcription=local_transcription,
                     audio_duration_s=duration,
                     lyric_line_count=len(lines),
                 ):
-                    transcription = retry_transcription
+                    logger.warning(
+                        "Автосинхронизация: низкое покрытие сегментов с VAD на %s, повторяем транскрипцию через "
+                        "альтернативный VAD (duration=%.2fs, segments=%d)",
+                        label,
+                        duration,
+                        len(local_transcription.get("segments") or []),
+                    )
+                    model_retry = whisperx.load_model(
+                        "small",
+                        device,
+                        compute_type=compute_type,
+                        language=language_code,
+                    )
+                    retry_transcription = model_retry.transcribe(loaded_audio, batch_size=8)
+                    if not _transcription_coverage_is_too_low(
+                        transcription=retry_transcription,
+                        audio_duration_s=duration,
+                        lyric_line_count=len(lines),
+                    ):
+                        local_transcription = retry_transcription
+
+                return local_transcription, loaded_audio
+
+            transcription, audio = transcribe_with_recovery(source_audio, label=source_type)
+            words_in_transcription = sum(len(seg.get("words") or []) for seg in (transcription.get("segments") or []))
+            sparse_material = _alignment_material_is_too_sparse(
+                recognized_word_count=words_in_transcription,
+                lyric_line_count=len(lines),
+            )
+            if source_type == "vocals_stem" and sparse_material:
+                logger.warning(
+                    "Автосинхронизация: слишком мало слов на vocals stem (words=%d, lines=%d), "
+                    "повторяем на full mix",
+                    words_in_transcription,
+                    len(lines),
+                )
+                transcription_mix, audio_mix = transcribe_with_recovery(audio_path, label="full_mix")
+                words_mix = sum(len(seg.get("words") or []) for seg in (transcription_mix.get("segments") or []))
+                if words_mix > words_in_transcription:
+                    source_audio = audio_path
+                    source_type = "full_mix_recovered"
+                    transcription = transcription_mix
+                    audio = audio_mix
 
         segments = transcription.get("segments") or []
         if not segments:

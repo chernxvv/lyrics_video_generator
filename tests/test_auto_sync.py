@@ -7,7 +7,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.auto_sync import AutoSyncError, _split_lyrics_text, _transcription_coverage_is_too_low, auto_sync_lyrics
+from core.auto_sync import (
+    AutoSyncError,
+    _alignment_material_is_too_sparse,
+    _split_lyrics_text,
+    _transcription_coverage_is_too_low,
+    auto_sync_lyrics,
+)
 from models import LyricLine
 import core.line_alignment as line_alignment
 from core.line_alignment import (
@@ -137,6 +143,11 @@ def test_transcription_coverage_is_acceptable_for_full_timeline() -> None:
         audio_duration_s=120.0,
         lyric_line_count=20,
     )
+
+
+def test_alignment_material_is_too_sparse_threshold() -> None:
+    assert _alignment_material_is_too_sparse(recognized_word_count=120, lyric_line_count=58)
+    assert not _alignment_material_is_too_sparse(recognized_word_count=190, lyric_line_count=58)
 
 
 def test_get_missing_autosync_packages_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
