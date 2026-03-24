@@ -634,6 +634,56 @@ def test_align_lyric_lines_global_refines_suspicious_anchor_block_instead_of_loc
     assert result[19].raw_start_seconds > 24.0
 
 
+def test_align_lyric_lines_global_bridges_unresolved_strong_block_between_anchors() -> None:
+    lyric_lines = [
+        "alpha open line",
+        "beta second phrase",
+        "gamma third phrase",
+        "delta anchor line",
+    ]
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=12.63, end=12.80, confidence=0.99, index=0),
+        RecognizedWord(raw="open", normalized="open", start=12.81, end=12.95, confidence=0.99, index=1),
+        RecognizedWord(raw="line", normalized="line", start=13.00, end=13.15, confidence=0.99, index=2),
+        RecognizedWord(raw="delta", normalized="delta", start=16.20, end=16.35, confidence=0.99, index=3),
+        RecognizedWord(raw="anchor", normalized="anchor", start=16.36, end=16.52, confidence=0.99, index=4),
+        RecognizedWord(raw="line", normalized="line", start=16.54, end=16.69, confidence=0.99, index=5),
+    ]
+
+    def fake_global_align_tokens(*_args, **_kwargs):
+        return {
+            0: [
+                line_alignment._TokenMatch(token_idx_in_line=0, recognized_idx=0),
+                line_alignment._TokenMatch(token_idx_in_line=1, recognized_idx=1),
+                line_alignment._TokenMatch(token_idx_in_line=2, recognized_idx=2),
+            ],
+            3: [
+                line_alignment._TokenMatch(token_idx_in_line=0, recognized_idx=3),
+                line_alignment._TokenMatch(token_idx_in_line=1, recognized_idx=4),
+                line_alignment._TokenMatch(token_idx_in_line=2, recognized_idx=5),
+            ],
+        }
+
+    original_global_align = line_alignment._global_align_tokens
+    try:
+        line_alignment._global_align_tokens = fake_global_align_tokens
+        result = align_lyric_lines(
+            lyric_lines,
+            recognized,
+            config=LineAlignmentConfig(use_global_alignment=True),
+        )
+    finally:
+        line_alignment._global_align_tokens = original_global_align
+
+    assert result[0].status == "matched_global"
+    assert result[3].status == "matched_global"
+    assert "bridged" in result[1].status
+    assert "bridged" in result[2].status
+    assert result[1].raw_start_seconds > result[0].raw_start_seconds + 0.6
+    assert result[2].raw_start_seconds > result[1].raw_start_seconds + 0.6
+    assert result[2].raw_start_seconds < result[3].raw_start_seconds
+
+
 def test_align_lyric_lines_greedy_keeps_searching_after_weak_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     lyric_lines = ["alpha beta", "gamma delta"]
     recognized = [
