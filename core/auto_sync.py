@@ -108,6 +108,34 @@ def _extract_words_and_segments(aligned_result: dict) -> tuple[list[dict], list[
     return words, segments
 
 
+def _transcription_coverage_is_too_low(
+    *,
+    transcription: dict,
+    audio_duration_s: float,
+    lyric_line_count: int,
+) -> bool:
+    segments = transcription.get("segments") or []
+    if not segments:
+        return True
+
+    last_segment_end = 0.0
+    for segment in segments:
+        seg_end = segment.get("end")
+        if seg_end is None:
+            continue
+        last_segment_end = max(last_segment_end, float(seg_end))
+
+    word_count = 0
+    for segment in segments:
+        words = segment.get("words")
+        if words:
+            word_count += len(words)
+
+    covered_ratio = 0.0 if audio_duration_s <= 0 else (last_segment_end / max(1e-6, audio_duration_s))
+    min_expected_words = max(8, lyric_line_count * 2)
+    return covered_ratio < 0.78 or word_count < min_expected_words
+
+
 def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[LyricLine]:
     try:
         import whisperx
@@ -169,10 +197,37 @@ def _auto_sync_whisperx_word_level(audio_path: str, lines: list[str]) -> list[Ly
                     language=language_code,
                     vad_method="silero",
                 )
+                used_vad = True
             except TypeError:
                 # WhisperX старых версий может не поддерживать vad_method.
                 model = whisperx.load_model("small", device, compute_type=compute_type, language=language_code)
+                used_vad = False
             transcription = model.transcribe(audio, batch_size=8)
+
+            if used_vad and _transcription_coverage_is_too_low(
+                transcription=transcription,
+                audio_duration_s=duration,
+                lyric_line_count=len(lines),
+            ):
+                logger.warning(
+                    "Автосинхронизация: низкое покрытие сегментов с VAD, повторяем транскрипцию без VAD "
+                    "(duration=%.2fs, segments=%d)",
+                    duration,
+                    len(transcription.get("segments") or []),
+                )
+                model_no_vad = whisperx.load_model(
+                    "small",
+                    device,
+                    compute_type=compute_type,
+                    language=language_code,
+                )
+                retry_transcription = model_no_vad.transcribe(audio, batch_size=8)
+                if not _transcription_coverage_is_too_low(
+                    transcription=retry_transcription,
+                    audio_duration_s=duration,
+                    lyric_line_count=len(lines),
+                ):
+                    transcription = retry_transcription
 
         segments = transcription.get("segments") or []
         if not segments:
