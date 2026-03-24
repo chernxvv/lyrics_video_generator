@@ -100,6 +100,9 @@ class LineAlignmentConfig:
     global_hard_line_time_factor: float = 3.6
     global_hard_line_word_factor: float = 4.5
     global_constraint_penalty: float = 7.5
+    global_min_adjacent_gap_ratio: float = 0.18
+    global_min_adjacent_gap_floor_s: float = 0.35
+    global_small_gap_strict_token_threshold: int = 3
     segment_expected_match_bonus: float = 0.32
     segment_jump_penalty: float = 0.58
     segment_far_penalty: float = 1.35
@@ -909,6 +912,7 @@ def _is_global_match_reliable(
     raw_start_seconds: float | None,
     confidence: float,
     prev_reliable_line_idx: int,
+    prev_reliable_token_count: int,
     prev_reliable_raw_start_seconds: float | None,
     prev_reliable_anchor_idx: int,
     last_used_recognized_idx: int,
@@ -987,6 +991,16 @@ def _is_global_match_reliable(
         if line_delta == 1 and gap_from_prev > adjacent_gap_limit:
             details["rejected_reason"] = "gap_from_prev_line_too_large"
             return False, details
+        strict_token_floor = max(1, int(cfg.global_small_gap_strict_token_threshold))
+        if line_delta == 1 and prev_reliable_token_count >= strict_token_floor and len(line_tokens) >= strict_token_floor:
+            adjacent_gap_floor = max(
+                float(cfg.global_min_adjacent_gap_floor_s),
+                expected_gap_s * float(cfg.global_min_adjacent_gap_ratio),
+                max(0.0, float(cfg.min_line_gap_ms)) / 1000.0 * 2.0,
+            )
+            if gap_from_prev < adjacent_gap_floor:
+                details["rejected_reason"] = "gap_from_prev_line_too_small"
+                return False, details
         if line_delta == 1 and recognized_jump_words > adjacent_word_limit:
             details["rejected_reason"] = "recognized_jump_too_large"
             return False, details
@@ -1679,6 +1693,7 @@ def _align_lyric_lines_global(
     interpolated_low_info_lines = 0
     global_rejection_count = 0
     prev_reliable_line_idx = -1
+    prev_reliable_token_count = 0
     prev_reliable_raw_start: float | None = None
     prev_reliable_anchor_idx = -1
     last_used_recognized_idx = -1
@@ -1704,6 +1719,7 @@ def _align_lyric_lines_global(
                 raw_start_seconds=start,
                 confidence=confidence,
                 prev_reliable_line_idx=prev_reliable_line_idx,
+                prev_reliable_token_count=prev_reliable_token_count,
                 prev_reliable_raw_start_seconds=prev_reliable_raw_start,
                 prev_reliable_anchor_idx=prev_reliable_anchor_idx,
                 last_used_recognized_idx=last_used_recognized_idx,
@@ -1721,6 +1737,7 @@ def _align_lyric_lines_global(
                 anchor_indices[i] = idx
                 anchored_strong_lines += 1
                 prev_reliable_line_idx = i
+                prev_reliable_token_count = len(line_tokens[i])
                 prev_reliable_raw_start = float(start)
                 prev_reliable_anchor_idx = idx
                 last_used_recognized_idx = max(last_used_recognized_idx, max(match.recognized_idx for match in matched))

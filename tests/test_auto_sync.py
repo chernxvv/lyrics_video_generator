@@ -503,6 +503,45 @@ def test_align_lyric_lines_global_rejects_late_local_match_when_previous_line_is
     assert result[1].details["recognized_jump_words"] >= 1
 
 
+def test_is_global_match_reliable_rejects_implausibly_small_adjacent_gap() -> None:
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=12.63, end=12.75, confidence=0.99, index=0),
+        RecognizedWord(raw="beta", normalized="beta", start=12.80, end=12.90, confidence=0.99, index=1),
+        RecognizedWord(raw="gamma", normalized="gamma", start=12.95, end=13.05, confidence=0.99, index=2),
+        RecognizedWord(raw="delta", normalized="delta", start=12.75, end=12.85, confidence=0.99, index=3),
+        RecognizedWord(raw="echo", normalized="echo", start=12.87, end=12.95, confidence=0.99, index=4),
+        RecognizedWord(raw="foxtrot", normalized="foxtrot", start=12.99, end=13.10, confidence=0.99, index=5),
+    ]
+    matched = [
+        line_alignment._TokenMatch(token_idx_in_line=0, recognized_idx=3),
+        line_alignment._TokenMatch(token_idx_in_line=1, recognized_idx=4),
+        line_alignment._TokenMatch(token_idx_in_line=2, recognized_idx=5),
+    ]
+
+    reliable, details = line_alignment._is_global_match_reliable(
+        line_idx=1,
+        line_count=40,
+        line_tokens=["delta", "echo", "foxtrot"],
+        matched=matched,
+        recognized_words=recognized,
+        raw_start_seconds=12.75,
+        confidence=1.0,
+        prev_reliable_line_idx=0,
+        prev_reliable_token_count=4,
+        prev_reliable_raw_start_seconds=12.63,
+        prev_reliable_anchor_idx=2,
+        last_used_recognized_idx=2,
+        first_word_time=12.63,
+        last_word_time=170.0,
+        cfg=LineAlignmentConfig(use_global_alignment=True),
+        segments=[],
+    )
+
+    assert not reliable
+    assert details["rejected_reason"] == "gap_from_prev_line_too_small"
+    assert details["gap_from_prev_line_s"] == pytest.approx(0.12, abs=0.001)
+
+
 def test_align_lyric_lines_global_refines_suspicious_anchor_block_instead_of_locking_tail() -> None:
     lyric_lines = [f"line{idx} aa bb" for idx in range(20)]
     recognized: list[RecognizedWord] = []
