@@ -1849,6 +1849,34 @@ def _align_lyric_lines_global(
         )
         if diagnostic_candidates:
             diagnostic = diagnostic_candidates[0]
+            line_delta = max(1, i - prev_line_idx) if prev_line_idx >= 0 else 1
+            max_recovery_gap_s = max(
+                float(cfg.max_line_jump_ms) / 1000.0,
+                (float(cfg.max_line_jump_ms) / 1000.0) * line_delta,
+            )
+            recovery_gap_s = (
+                None
+                if prev is None or diagnostic.raw_start_seconds is None
+                else max(0.0, float(diagnostic.raw_start_seconds) - float(prev))
+            )
+            if (
+                diagnostic.raw_start_seconds is not None
+                and diagnostic.anchor_idx >= 0
+                and diagnostic.confidence >= max(0.45, cfg.min_local_match_score * 0.85)
+                and diagnostic.score >= (cfg.min_local_match_score * 0.75)
+                and (prev is None or diagnostic.raw_start_seconds >= (float(prev) + min_gap_s))
+                and (recovery_gap_s is None or recovery_gap_s <= max_recovery_gap_s)
+            ):
+                raw_starts[i] = float(diagnostic.raw_start_seconds)
+                confidences[i] = max(confidences[i], float(diagnostic.confidence))
+                statuses[i] = "matched_local_recovery"
+                anchor_indices[i] = diagnostic.anchor_idx
+                anchor_words[i] = diagnostic.anchor_word
+                line_details[i]["local_recovery_score"] = round(float(diagnostic.score), 4)
+                line_details[i]["local_recovery_confidence"] = round(float(diagnostic.confidence), 4)
+                line_details[i]["local_recovery_anchor_idx"] = diagnostic.anchor_idx
+                line_details[i]["local_recovery_anchor_word"] = diagnostic.anchor_word
+                continue
             diagnostic_prior = _estimate_segment_prior(
                 segments=segments,
                 matched_time=diagnostic.raw_start_seconds,

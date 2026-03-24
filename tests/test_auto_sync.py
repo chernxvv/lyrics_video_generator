@@ -717,6 +717,47 @@ def test_align_lyric_lines_global_bridges_unresolved_strong_block_between_anchor
     assert result[2].raw_start_seconds < result[3].raw_start_seconds
 
 
+def test_align_lyric_lines_global_uses_local_recovery_for_unresolved_strong_line() -> None:
+    lyric_lines = [
+        "alpha start now",
+        "beta gamma delta",
+    ]
+    recognized = [
+        RecognizedWord(raw="alpha", normalized="alpha", start=0.5, end=0.7, confidence=0.99, index=0),
+        RecognizedWord(raw="start", normalized="start", start=0.8, end=1.0, confidence=0.99, index=1),
+        RecognizedWord(raw="now", normalized="now", start=1.1, end=1.3, confidence=0.99, index=2),
+        RecognizedWord(raw="noise", normalized="noise", start=3.0, end=3.1, confidence=0.99, index=3),
+        RecognizedWord(raw="beta", normalized="beta", start=7.0, end=7.2, confidence=0.99, index=4),
+        RecognizedWord(raw="gamma", normalized="gamma", start=7.3, end=7.5, confidence=0.99, index=5),
+        RecognizedWord(raw="delta", normalized="delta", start=7.6, end=7.8, confidence=0.99, index=6),
+    ]
+
+    def fake_global_align_tokens(*_args, **_kwargs):
+        return {
+            0: [
+                    line_alignment._TokenMatch(token_idx_in_line=0, recognized_idx=0),
+                    line_alignment._TokenMatch(token_idx_in_line=1, recognized_idx=1),
+                    line_alignment._TokenMatch(token_idx_in_line=2, recognized_idx=2),
+                ],
+            }
+
+    original_global_align = line_alignment._global_align_tokens
+    try:
+        line_alignment._global_align_tokens = fake_global_align_tokens
+        result = align_lyric_lines(
+            lyric_lines,
+            recognized,
+            config=LineAlignmentConfig(use_global_alignment=True),
+        )
+    finally:
+        line_alignment._global_align_tokens = original_global_align
+
+    assert result[0].status == "matched_global"
+    assert result[1].status == "matched_local_recovery"
+    assert result[1].raw_start_seconds == pytest.approx(7.0, abs=0.01)
+    assert result[1].anchor_word == "beta"
+
+
 def test_align_lyric_lines_greedy_keeps_searching_after_weak_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     lyric_lines = ["alpha beta", "gamma delta"]
     recognized = [
