@@ -13,7 +13,7 @@ authors = [
   { name = "Roman Chernov", email = "romanchernovv@gmail.com" },
 ]
 dependencies = [
-  "PySide6>=6.10,<7",
+  "dearpygui>=1.11,<2",
   "Pillow>=10.4,<11",
   "numpy>=2.4,<3",
   "scikit-learn>=1.8,<2",
@@ -32,7 +32,7 @@ lyrics-video-generator = "main:main"
 lyrics-video-generator-bootstrap = "bootstrap:main"
 
 [tool.setuptools.packages.find]
-include = ["core*", "gui*", "models*"]
+include = ["core*", "gui*", "gui_dpg*", "models*"]
 exclude = ["tests*"]
 
 [tool.pytest.ini_options]
